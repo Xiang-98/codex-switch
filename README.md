@@ -22,6 +22,7 @@
 - **API key 安全**：不写入 `providers.json` 或 Codex 配置；仅在你显式同意时写入 `~/.codex-switch/keys.env`（权限 600），Codex 通过本地凭据命令按需读取
 - **桌面端免重启切换**：`use` 后新建 Codex 任务即可生效，无需退出应用
 - 内置冒烟测试：`curl` 一次 `/responses` 端点，显示 HTTP 状态和延迟
+- 附赠 `probe-reasoning.sh`：逐档探测供应商是否支持 `reasoning.effort`（思考深度/档位）
 - 轻量依赖：Codex 0.118.0+、bash 3.2+、python3、curl；`fzf` 可选
 - 附赠命令：`edit`（`$EDITOR` 编辑清单）、`doctor`（健康检查）、`install`（自动配置 PATH 和别名）、`update` / `upgrade`（安全更新）
 
@@ -155,15 +156,39 @@ model_catalog_json = "~/.codex/model-catalogs/custom-catalog.json"
 - 已确认支持：阿里云百炼（`none` → `max` 共 7 档）、MiniMax-M3（映射为 thinking 开关）、OpenRouter（Beta 支持 reasoning 参数）
 - 不认识该参数的平台多数会静默忽略，少数会报错；报错时把档位调低或设为 `none`
 
-验证是否真生效：用不同档位各发一次请求，对比响应里的 `reasoning` 输出项和 `usage.output_tokens_details.reasoning_tokens`：
+### 探测脚本 probe-reasoning.sh
+
+`probe-reasoning.sh` 用来回答一个问题：当前供应商到底支不支持思考深度、支持哪几档。它的工作流程：
+
+1. 从 `~/.codex-switch/providers.json` 读取当前（或指定）供应商的 `base_url` / `model` / `env_key`，并按 codex-switch 的规则从 `keys.env` 或环境变量取 key
+2. 用一道需要推理的题目（可用 `PROBE_PROMPT` 覆盖）逐档发起 `/responses` 请求，各档请求只有 `reasoning.effort` 不同
+3. 解析每次响应的 HTTP 状态、是否含 `reasoning` 输出项、`usage.output_tokens_details.reasoning_tokens` 和延迟，汇总成表格并给出结论
+
+用法：
 
 ```bash
-curl -X POST "<base_url>/responses" \
-  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
-  -d '{"model":"<model>","input":"9.11 和 9.9 哪个大？","reasoning":{"effort":"high"}}'
+./probe-reasoning.sh                   # 探测当前供应商（默认 minimal/low/medium/high 四档）
+./probe-reasoning.sh go                # 探测指定供应商
+./probe-reasoning.sh go --full         # 探测全部已知档位：none minimal low medium high xhigh max
+./probe-reasoning.sh go gpt-5.6-luna   # 临时换个 model 探测
 ```
 
-`reasoning_tokens` 随档位明显变化即为生效。注意 `codex-switch test` 只探测连通性，不校验 reasoning。
+可用环境变量：
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `PROBE_EFFORTS` | `minimal low medium high` | 自定义待探测档位列表 |
+| `PROBE_PROMPT` | 一道概率题 | 自定义测试问题（问题太简单时各档 token 数可能拉不开差距） |
+| `PROBE_MAX_TOKENS` | `4096` | 请求的 `max_output_tokens` |
+| `PROBE_TIMEOUT` | `180` | 单次请求超时（秒） |
+
+结论判读：
+
+- `reasoning_tokens` 随档位递增 → 思考深度真实生效
+- 全部 200 但无 reasoning 输出 → 参数被接受但未生效（模型非推理模型，或平台忽略了 effort）
+- 某档报错 → 该档不受支持（备注列会显示服务端返回的错误摘要）
+
+探测到更多可用档位后，把它们补进 `model_catalog_json` 的 `supported_reasoning_levels`，Codex `/model` 菜单就会显示对应选项（菜单档位以 catalog 声明为准，未声明的不会下发）。注意 `codex-switch test` 只探测连通性，不校验 reasoning。
 
 ## 命令
 
