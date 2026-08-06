@@ -151,6 +151,16 @@ model_catalog_json = "~/.codex/model-catalogs/custom-catalog.json"
 
 未配置 catalog 时，退回 `config.toml` 顶层的 `model_reasoning_effort` 全局设置。
 
+### CLI 的 /model 不显示自定义模型或档位
+
+桌面端能切档位、CLI 的 `/model` 却只有官方模型，是因为两端机制不同：CLI 的模型选择器只认 `model_catalog_json` 声明的模型。按顺序排查：
+
+1. catalog 文件里的 `slug` 必须与 config.toml 顶层 `model` 一字不差
+2. `model_catalog_json` 路径要正确（支持 `~`）
+3. **重启 CLI**——config 和 catalog 都只在启动时读取，热改不生效
+4. catalog 文件字段用 snake_case（`supported_reasoning_levels` / `default_reasoning_level` / `display_name`），与 CLI 内置 catalog 一致；若某版本升级后失效，注意核对当时版本的字段契约（桌面端内部协议用的是 camelCase，两者不同）
+5. 兜底：不依赖菜单，直接在 config.toml 顶层写 `model_reasoning_effort = "high"`，每次请求都会带上该档位
+
 `reasoning.effort` 发出去后是否生效由供应商决定：
 
 - 已确认支持：阿里云百炼（`none` → `max` 共 7 档）、MiniMax-M3（映射为 thinking 开关）、OpenRouter（Beta 支持 reasoning 参数）
