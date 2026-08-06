@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.3.0"
+VERSION="1.3.1"
+MIN_CODEX_AUTH_VERSION="0.118.0"
 CS_HOME="${CODEX_SWITCH_HOME:-$HOME/.codex-switch}"
 CS_STORE="$CS_HOME/providers.json"
 CS_KEYS="$CS_HOME/keys.env"
@@ -19,6 +20,81 @@ err()  { printf '%s✗%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; }
 warn() { printf '%s⚠%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
 info() { printf '%sℹ%s %s\n' "$C_CYAN" "$C_RESET" "$*"; }
 die()  { err "$*"; exit 1; }
+
+_cs_parse_semver() {
+  local raw="$1"
+  if [[ "$raw" =~ ([0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?) ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  return 1
+}
+
+_cs_version_at_least() {
+  local actual_no_build="${1%%+*}" required_no_build="${2%%+*}"
+  local actual_core="${actual_no_build%%-*}" required_core="${required_no_build%%-*}"
+  local a_major a_minor a_patch r_major r_minor r_patch
+
+  IFS=. read -r a_major a_minor a_patch <<< "$actual_core"
+  IFS=. read -r r_major r_minor r_patch <<< "$required_core"
+
+  if ((a_major != r_major)); then ((a_major > r_major)); return; fi
+  if ((a_minor != r_minor)); then ((a_minor > r_minor)); return; fi
+  if ((a_patch != r_patch)); then ((a_patch > r_patch)); return; fi
+
+  # 同一核心版本下，稳定版高于预发布版；当前最低要求本身是稳定版。
+  [[ "$actual_no_build" != *-* || "$required_no_build" == *-* ]]
+}
+
+_cs_codex_runtime_candidates() {
+  local cli="" desktop
+  if [[ -n "${CODEX_SWITCH_CODEX_BIN:-}" ]]; then
+    printf '指定 Codex\t%s\n' "$CODEX_SWITCH_CODEX_BIN"
+    return 0
+  fi
+
+  cli=$(command -v codex 2>/dev/null || true)
+  [[ -n "$cli" ]] && printf 'Codex CLI\t%s\n' "$cli"
+
+  for desktop in \
+    "/Applications/ChatGPT.app/Contents/Resources/codex" \
+    "$HOME/Applications/ChatGPT.app/Contents/Resources/codex"
+  do
+    [[ -x "$desktop" && "$desktop" != "$cli" ]] || continue
+    printf 'Codex 桌面端\t%s\n' "$desktop"
+  done
+}
+
+_cs_check_codex_auth_support() {
+  local verbose="${1:-0}" label path output version
+  local seen=0 supported=0
+
+  while IFS=$'\t' read -r label path; do
+    [[ -n "$path" ]] || continue
+    seen=$((seen + 1))
+    if ! output=$("$path" --version 2>&1); then
+      warn "$label 无法读取版本: $path"
+      continue
+    fi
+    if ! version=$(_cs_parse_semver "$output"); then
+      warn "$label 返回了无法识别的版本: $output"
+      continue
+    fi
+    if _cs_version_at_least "$version" "$MIN_CODEX_AUTH_VERSION"; then
+      supported=$((supported + 1))
+      [[ "$verbose" == 1 ]] && ok "$label: ${version}（命令式认证可用）"
+    else
+      warn "$label: $version 过旧；命令式认证要求 >= $MIN_CODEX_AUTH_VERSION ($path)"
+    fi
+  done < <(_cs_codex_runtime_candidates)
+
+  if ((seen == 0)); then
+    warn "未找到 Codex；命令式认证要求 Codex >= $MIN_CODEX_AUTH_VERSION"
+  elif ((supported == 0)); then
+    warn "没有检测到支持命令式认证的 Codex 运行时"
+  fi
+  ((supported > 0))
+}
 
 _cs_store() {
   python3 - "$CS_STORE" "$@" <<'PY'
@@ -357,6 +433,7 @@ _cs_cmd_use() {
     [[ -z "$base_url" || -z "$model" ]] && die "供应商 $name 配置不完整（缺 base_url/model），请用 codex-switch edit 修复"
     [[ "$wire_api" == "responses" ]] || die "当前 Codex 仅支持 wire_api=responses；请确认供应商支持 /responses 后重新添加"
     if [[ -n "$env_key" ]]; then
+      _cs_check_codex_auth_support || die "请先升级 Codex 到 $MIN_CODEX_AUTH_VERSION 或更高版本，再切换自定义供应商"
       auth_command=$(_cs_script_path) || die "无法解析凭据读取命令路径"
     fi
     tmp=$(_cs_apply_config provider "$name" "$model" "$base_url" "$env_key" "$wire_api" "$auth_command" "$CS_KEYS") || die "写入配置失败（备份未受影响）"
@@ -844,6 +921,7 @@ _cs_cmd_doctor() {
   fi
   command -v curl >/dev/null && ok "curl 可用" || { err "curl 未安装"; fail=1; }
   command -v fzf >/dev/null && ok "fzf 可用（无参数交互模式开启）" || warn "fzf 未安装（可选，无参数交互模式不可用）"
+  _cs_check_codex_auth_support 1 || fail=1
 
   printf '%s数据%s\n' "$C_BOLD" "$C_RESET"
   _cs_store init
@@ -928,6 +1006,7 @@ ${C_BOLD}存储:${C_RESET}
   Codex 配置  ${CS_CONFIG}（只改 model / model_provider / [model_providers.*]，其余原样保留，写入前备份 .bak）
 
 ${C_BOLD}提示:${C_RESET} alias cs='codex-switch'
+${C_BOLD}要求:${C_RESET} 命令式认证需 Codex >= $MIN_CODEX_AUTH_VERSION
 EOF
 }
 
@@ -955,4 +1034,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
