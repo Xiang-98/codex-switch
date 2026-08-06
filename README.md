@@ -120,6 +120,51 @@ DeepSeek 官方、Kimi（月之暗面）、智谱 GLM、腾讯混元、硅基流
 
 > 提示：接入后一律用 `codex-switch test` 验证——HTTP 200 即可用；404 通常意味着该端点不支持 Responses API。
 
+## 思考量级与自定义供应商
+
+在 Codex 里切换思考量级（`/model` 选 low / medium / high…）**不会切换供应商**：它只是改变请求体里的 `reasoning.effort` 参数，请求仍发往当前 `model_provider` 的 base_url，codex-switch 写入的配置不受影响。
+
+自定义模型要在 `/model` 菜单里正确显示可用档位，需用 `model_catalog_json` 声明模型能力（参考 [MiniMax](https://platform.minimaxi.com/docs/token-plan/codex)、[小米 MiMo](https://mimo.mi.com/docs/zh-CN/tokenplan/integration/codex-configuration) 的官方 Codex 文档）：
+
+```toml
+# ~/.codex/config.toml
+model_catalog_json = "~/.codex/model-catalogs/custom-catalog.json"
+```
+
+```json
+{
+  "models": [
+    {
+      "slug": "MiniMax-M3",
+      "display_name": "MiniMax-M3",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        { "effort": "none", "description": "关闭思考" },
+        { "effort": "low", "description": "轻量思考" },
+        { "effort": "high", "description": "深度思考" }
+      ]
+    }
+  ]
+}
+```
+
+未配置 catalog 时，退回 `config.toml` 顶层的 `model_reasoning_effort` 全局设置。
+
+`reasoning.effort` 发出去后是否生效由供应商决定：
+
+- 已确认支持：阿里云百炼（`none` → `max` 共 7 档）、MiniMax-M3（映射为 thinking 开关）、OpenRouter（Beta 支持 reasoning 参数）
+- 不认识该参数的平台多数会静默忽略，少数会报错；报错时把档位调低或设为 `none`
+
+验证是否真生效：用不同档位各发一次请求，对比响应里的 `reasoning` 输出项和 `usage.output_tokens_details.reasoning_tokens`：
+
+```bash
+curl -X POST "<base_url>/responses" \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"model":"<model>","input":"9.11 和 9.9 哪个大？","reasoning":{"effort":"high"}}'
+```
+
+`reasoning_tokens` 随档位明显变化即为生效。注意 `codex-switch test` 只探测连通性，不校验 reasoning。
+
 ## 命令
 
 | 命令 | 说明 |
