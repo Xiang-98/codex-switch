@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.1.0"
+VERSION="1.1.1"
 CS_HOME="${CODEX_SWITCH_HOME:-$HOME/.codex-switch}"
 CS_STORE="$CS_HOME/providers.json"
 CS_KEYS="$CS_HOME/keys.env"
@@ -459,24 +459,64 @@ _cs_cmd_test() {
 _cs_cmd_add() {
   _cs_store init
   local name base_url model env_key wire_api ans
-  read -rp "供应商名称 (如 go): " name
-  [[ -z "$name" ]] && die "名称不能为空"
-  [[ "$name" =~ ^[A-Za-z0-9_-]+$ ]] || die "名称只能包含字母、数字、_、-"
-  if _cs_store exists "$name"; then
-    read -rp "已存在 ${name}，覆盖? [y/N] " ans
-    [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消"; return 0; }
-  fi
-  read -rp "base_url (如 https://opencode.ai/zen/go/v1): " base_url
-  [[ -z "$base_url" ]] && die "base_url 不能为空"
-  [[ "$base_url" =~ ^https?:// ]] || die "base_url 必须以 http:// 或 https:// 开头"
-  read -rp "model (如 deepseek-v4-flash): " model
-  [[ -z "$model" ]] && die "model 不能为空"
+  while true; do
+    read -rp "供应商名称 (如 go): " name
+    if [[ -z "$name" ]]; then
+      err "名称不能为空，请重新输入"
+      continue
+    fi
+    if [[ ! "$name" =~ ^[A-Za-z0-9_-]+$ ]]; then
+      err "名称只能包含字母、数字、_、-，请重新输入"
+      continue
+    fi
+    if _cs_store exists "$name"; then
+      read -rp "已存在 ${name}，覆盖? [y/N] " ans
+      [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消"; return 0; }
+    fi
+    break
+  done
+
+  while true; do
+    read -rp "base_url (如 https://opencode.ai/zen/go/v1): " base_url
+    if [[ -z "$base_url" ]]; then
+      err "base_url 不能为空，请重新输入"
+      continue
+    fi
+    if [[ ! "$base_url" =~ ^https?:// ]]; then
+      err "base_url 必须以 http:// 或 https:// 开头，请重新输入"
+      continue
+    fi
+    break
+  done
+
+  while true; do
+    read -rp "model (如 deepseek-v4-flash): " model
+    if [[ -z "$model" ]]; then
+      err "model 不能为空，请重新输入"
+      continue
+    fi
+    break
+  done
+
   local default_key="OPENCODE_$(tr 'a-z-' 'A-Z_' <<<"$name")_KEY"
-  read -rp "env_key [$default_key]: " env_key
-  env_key=${env_key:-$default_key}
-  [[ "$env_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "env_key 必须是合法 shell 变量名（字母或下划线开头，仅含字母/数字/下划线）"
-  read -rp "wire_api [responses]: " wire_api
-  wire_api=${wire_api:-responses}
+  while true; do
+    read -rp "env_key（变量名，不是 API key）[$default_key]: " env_key
+    env_key=${env_key:-$default_key}
+    if [[ ! "$env_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      err "env_key 必须是合法 shell 变量名（不是 API key），请重新输入"
+      continue
+    fi
+    break
+  done
+
+  while true; do
+    read -rp "wire_api [responses，可选 chat]: " wire_api
+    wire_api=${wire_api:-responses}
+    case "$wire_api" in
+      responses|chat) break ;;
+      *) err "wire_api 仅支持 responses 或 chat，请重新输入" ;;
+    esac
+  done
 
   local json
   json=$(python3 -c 'import json,sys; print(json.dumps({"base_url":sys.argv[1],"model":sys.argv[2],"wire_api":sys.argv[3],"env_key":sys.argv[4]}))' \

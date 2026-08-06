@@ -39,8 +39,8 @@ $ codex-switch add
 供应商名称 (如 go): go
 base_url (如 https://opencode.ai/zen/go/v1): https://opencode.ai/zen/go/v1
 model (如 deepseek-v4-flash): deepseek-v4-flash
-env_key [OPENCODE_GO_KEY]:
-wire_api [responses]:
+env_key（变量名，不是 API key）[OPENCODE_GO_KEY]:
+wire_api [responses，可选 chat]:
 现在把 key 写入 ~/.codex-switch/keys.env 吗? [y/N] y
 OPENCODE_GO_KEY = ********
 ✓ 已添加 go (deepseek-v4-flash)
