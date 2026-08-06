@@ -136,18 +136,47 @@ model_catalog_json = "~/.codex/model-catalogs/custom-catalog.json"
 {
   "models": [
     {
-      "slug": "MiniMax-M3",
-      "display_name": "MiniMax-M3",
+      "slug": "deepseek-v4-flash",
+      "support_verbosity": false,
+      "apply_patch_tool_type": "freeform",
+      "web_search_tool_type": "text",
+      "input_modalities": ["text"],
+      "supports_image_detail_original": false,
+      "truncation_policy": { "mode": "tokens", "limit": 10000 },
+      "supports_parallel_tool_calls": true,
+      "tool_mode": "code_mode_only",
+      "include_skills_usage_instructions": false,
+      "auto_review_model_override": null,
+      "context_window": 1048576,
+      "max_context_window": 1048576,
+      "auto_compact_token_limit": null,
+      "comp_hash": "0",
+      "default_reasoning_summary": "none",
+      "display_name": "DeepSeek V4 Flash",
+      "description": "DeepSeek V4 Flash",
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
         { "effort": "none", "description": "关闭思考" },
-        { "effort": "low", "description": "轻量思考" },
-        { "effort": "high", "description": "深度思考" }
-      ]
+        { "effort": "minimal", "description": "极简思考" },
+        { "effort": "low", "description": "低强度思考" },
+        { "effort": "medium", "description": "中等思考" },
+        { "effort": "high", "description": "深度思考" },
+        { "effort": "xhigh", "description": "超深度思考" },
+        { "effort": "max", "description": "最大思考深度" }
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "upgrade": null,
+      "priority": 1,
+      "base_instructions": "",
+      "experimental_supported_tools": []
     }
   ]
 }
 ```
+
+> 注意：0.146 起 catalog 条目有一批**必填字段**（`shell_type`、`visibility`、`priority`、`truncation_policy`、`base_instructions` 等），缺一个就会加载失败并报 `missing field xxx`。上面是照 CLI 内置条目逐字段对齐、在 0.146 实测可加载的完整模板，直接改 `slug` / 档位 / `context_window` 即可复用。
 
 未配置 catalog 时，退回 `config.toml` 顶层的 `model_reasoning_effort` 全局设置。
 
@@ -157,9 +186,10 @@ model_catalog_json = "~/.codex/model-catalogs/custom-catalog.json"
 
 1. catalog 文件里的 `slug` 必须与 config.toml 顶层 `model` 一字不差
 2. `model_catalog_json` 路径要正确（支持 `~`）
-3. **重启 CLI**——config 和 catalog 都只在启动时读取，热改不生效
-4. catalog 文件字段用 snake_case（`supported_reasoning_levels` / `default_reasoning_level` / `display_name`），与 CLI 内置 catalog 一致；若某版本升级后失效，注意核对当时版本的字段契约（桌面端内部协议用的是 camelCase，两者不同）
-5. 兜底：不依赖菜单，直接在 config.toml 顶层写 `model_reasoning_effort = "high"`，每次请求都会带上该档位
+3. 必填字段齐全——直接用上方完整模板；缺字段会报 `missing field xxx`
+4. 改完先跑 `codex mcp list` 本地校验：配置能正常加载即合格，否则会精确报出缺哪个字段
+5. **重启 CLI**——config 和 catalog 都只在启动时读取，热改不生效
+6. 兜底：不依赖菜单，直接在 config.toml 顶层写 `model_reasoning_effort = "high"`，每次请求都会带上该档位
 
 `reasoning.effort` 发出去后是否生效由供应商决定：
 
