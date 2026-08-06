@@ -1,0 +1,28 @@
+codex-switch
+  s_3a139b621a2d0e::t_1ac55071a88420 759
+  s_3a139b621a2d0e::t_841bf64097ef1a 541,543-545,547-570,591-640,642-644
+  s_3a139b621a2d0e::t_00376add31d0b7 732-733
+README.md
+  s_3a139b621a2d0e::t_45fd2bdf221edb 19-20,24-33
+  s_3a139b621a2d0e::t_d9ab1c8ae26904 75-76
+  s_3a139b621a2d0e::t_dbf39ef528114e 34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "c5419522b9c89283da9638fa9cc2d22f6d928405",
+  "prompts": {},
+  "logical_commit_id": "c5419522b9c89283da9638fa9cc2d22f6d928405",
+  "sessions": {
+    "s_3a139b621a2d0e": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_02ab65286ffeBoK29youWGPOhL",
+        "model": "k3"
+      },
+      "human_author": "lixiang.alex <lixiang.alex@bigo.sg>",
+      "total_additions": 98,
+      "total_deletions": 15
+    }
+  }
+}
