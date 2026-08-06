@@ -1,0 +1,814 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VERSION="1.1.0"
+CS_HOME="${CODEX_SWITCH_HOME:-$HOME/.codex-switch}"
+CS_STORE="$CS_HOME/providers.json"
+CS_KEYS="$CS_HOME/keys.env"
+CS_CONFIG="${CS_CODEX_CONFIG:-$HOME/.codex/config.toml}"
+
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+  C_RESET=$'\033[0m'; C_DIM=$'\033[2m'; C_BOLD=$'\033[1m'
+  C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'; C_CYAN=$'\033[36m'
+else
+  C_RESET=""; C_DIM=""; C_BOLD=""; C_RED=""; C_GREEN=""; C_YELLOW=""; C_CYAN=""
+fi
+
+ok()   { printf '%s✓%s %s\n' "$C_GREEN" "$C_RESET" "$*"; }
+err()  { printf '%s✗%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; }
+warn() { printf '%s⚠%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
+info() { printf '%sℹ%s %s\n' "$C_CYAN" "$C_RESET" "$*"; }
+die()  { err "$*"; exit 1; }
+
+_cs_store() {
+  python3 - "$CS_STORE" "$@" <<'PY'
+import json, os, sys
+
+path = sys.argv[1]
+action = sys.argv[2]
+args = sys.argv[3:]
+
+def default():
+    return {"current": None, "providers": {"openai": {"official": True}}}
+
+def load():
+    if not os.path.exists(path):
+        return default()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            d = json.load(f)
+    except Exception as e:
+        sys.stderr.write("✗ providers.json 解析失败: %s\n" % e)
+        sys.exit(1)
+    if not isinstance(d, dict):
+        sys.stderr.write("✗ providers.json 结构非法\n")
+        sys.exit(1)
+    d.setdefault("current", None)
+    d.setdefault("providers", {})
+    return d
+
+def save(d):
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(d, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    os.replace(tmp, path)
+
+d = load()
+
+if action == "init":
+    if not os.path.exists(path):
+        save(d)
+elif action == "current":
+    print(d.get("current") or "")
+elif action == "names":
+    for n in d["providers"]:
+        print(n)
+elif action == "exists":
+    sys.exit(0 if args[0] in d["providers"] else 1)
+elif action == "is_official":
+    p = d["providers"].get(args[0])
+    sys.exit(0 if p and p.get("official") else 1)
+elif action == "get":
+    p = d["providers"].get(args[0]) or {}
+    v = p.get(args[1], "")
+    print("" if v is None else v)
+elif action == "list":
+    cur = d.get("current")
+    for n, p in d["providers"].items():
+        mark = "*" if n == cur else ""
+        if p.get("official"):
+            print("\x1f".join([n, mark, "official", "", ""]))
+        else:
+            print("\x1f".join([
+                n, mark,
+                p.get("model", "") or "",
+                p.get("base_url", "") or "",
+                p.get("env_key", "") or "",
+            ]))
+elif action == "set_current":
+    if args[0] not in d["providers"]:
+        sys.stderr.write("✗ 未知供应商: %s\n" % args[0])
+        sys.exit(1)
+    d["current"] = args[0]
+    save(d)
+elif action == "upsert":
+    d["providers"][args[0]] = json.loads(args[1])
+    save(d)
+elif action == "delete":
+    if args[0] not in d["providers"]:
+        sys.exit(1)
+    del d["providers"][args[0]]
+    if d.get("current") == args[0]:
+        d["current"] = None
+    save(d)
+else:
+    sys.stderr.write("unknown store action: %s\n" % action)
+    sys.exit(2)
+PY
+}
+
+_cs_apply_config() {
+  python3 - "$CS_CONFIG" "$@" <<'PY'
+import json, os, re, sys, tempfile
+
+path = sys.argv[1]
+mode = sys.argv[2]
+name = sys.argv[3] if len(sys.argv) > 3 else ""
+model = sys.argv[4] if len(sys.argv) > 4 else ""
+base_url = sys.argv[5] if len(sys.argv) > 5 else ""
+env_key = sys.argv[6] if len(sys.argv) > 6 else ""
+wire_api = sys.argv[7] if len(sys.argv) > 7 else "responses"
+
+text = ""
+if os.path.exists(path):
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read()
+
+def validate(t, label):
+    try:
+        import tomllib
+        if t.strip():
+            tomllib.loads(t)
+        return True
+    except ImportError:
+        bad = 0
+        for ln in t.splitlines():
+            s = ln.strip()
+            if s.startswith("[") and not (s.endswith("]") and len(s) > 2):
+                bad += 1
+        if bad:
+            sys.stderr.write("⚠ %s 可能存在非法 section 头（无 tomllib，仅做轻量校验）\n" % label)
+        return True
+    except Exception as e:
+        sys.stderr.write("✗ %s toml 校验失败: %s\n" % (label, e))
+        return False
+
+if text.strip() and not validate(text, "现有 config.toml"):
+    sys.exit(1)
+
+# 行级手术的已知限制：不感知 TOML 多行字符串——""" 块内以 [ 开头或含
+# model = 的行会被误判（Codex 配置里概率极低）；写后 validate() 会兜住绝大多数破坏。
+section_re = re.compile(r"^\s*\[")
+kv_re = re.compile(r'^\s*(model|model_provider)\s*=')
+target_re = re.compile(r"^\s*\[model_providers\." + re.escape(name) + r"\]\s*$")
+
+header_lines = []
+sections = []
+cur = None
+for ln in text.splitlines():
+    if section_re.match(ln):
+        if cur is not None:
+            sections.append(cur)
+        cur = [ln, []]
+    elif cur is None:
+        header_lines.append(ln)
+    else:
+        cur[1].append(ln)
+if cur is not None:
+    sections.append(cur)
+
+new_header = [ln for ln in header_lines if not kv_re.match(ln)]
+
+if mode == "provider":
+    new_header = ["model = " + json.dumps(model),
+                  "model_provider = " + json.dumps(name)] + new_header
+    sections = [s for s in sections if not target_re.match(s[0])]
+    body = ["name = " + json.dumps(name),
+            "base_url = " + json.dumps(base_url)]
+    if env_key:
+        body.append("env_key = " + json.dumps(env_key))
+    body.append("wire_api = " + json.dumps(wire_api))
+    sections.append(["[model_providers." + name + "]", body])
+
+while new_header and not new_header[0].strip():
+    new_header.pop(0)
+while new_header and not new_header[-1].strip():
+    new_header.pop()
+
+out = list(new_header)
+for hdr, body in sections:
+    while body and not body[-1].strip():
+        body.pop()
+    out.append("")
+    out.append(hdr)
+    out.extend(body)
+result = "\n".join(out).strip("\n") + "\n"
+
+if not validate(result, "生成配置"):
+    sys.exit(1)
+
+d = os.path.dirname(path) or "."
+os.makedirs(d, exist_ok=True)
+fd, tmp = tempfile.mkstemp(prefix=".config.toml.", dir=d)
+with os.fdopen(fd, "w", encoding="utf-8") as f:
+    f.write(result)
+print(tmp)
+PY
+}
+
+_cs_config_state() {
+  python3 - "$CS_CONFIG" <<'PY'
+import os, re, sys
+path = sys.argv[1]
+model = ""
+provider = ""
+if os.path.exists(path):
+    try:
+        import tomllib
+        with open(path, "rb") as f:
+            d = tomllib.load(f)
+        model = d.get("model", "") or ""
+        provider = d.get("model_provider", "") or ""
+    except ImportError:
+        in_header = True
+        kv = re.compile(r'^\s*(model|model_provider)\s*=\s*["\']?([^"\'#\n]+?)["\']?\s*(?:#.*)?$')
+        with open(path, "r", encoding="utf-8") as f:
+            for ln in f:
+                s = ln.strip()
+                if s.startswith("["):
+                    in_header = False
+                    break
+                m = kv.match(ln)
+                if m and in_header:
+                    if m.group(1) == "model":
+                        model = m.group(2)
+                    else:
+                        provider = m.group(2)
+    except Exception as e:
+        sys.stderr.write("warn: config.toml 解析失败: %s\n" % e)
+print("%s\t%s" % (model, provider))
+PY
+}
+
+_cs_source_keys() {
+  [[ -f "$CS_KEYS" ]] || return 0
+  local perm
+  perm=$(stat -f '%Lp' "$CS_KEYS" 2>/dev/null || stat -c '%a' "$CS_KEYS" 2>/dev/null || echo "")
+  if [[ -n "$perm" && "${perm: -3}" != "600" ]]; then
+    warn "keys.env 权限为 ${perm}，建议执行: chmod 600 $CS_KEYS"
+  fi
+  set -a
+  . "$CS_KEYS"
+  set +a
+}
+
+_cs_key_report() {
+  local env_key="$1"
+  if [[ -z "$env_key" ]]; then
+    printf '  key: %s(未声明 env_key)%s\n' "$C_DIM" "$C_RESET"
+    return 0
+  fi
+  if [[ -n "${!env_key:-}" ]]; then
+    printf '  key: %s %s✓ 已设置%s\n' "$env_key" "$C_GREEN" "$C_RESET"
+    return 0
+  fi
+  printf '  key: %s %s✗ 未设置%s\n' "$env_key" "$C_YELLOW" "$C_RESET"
+  printf '       %sexport %s="..." 或写入 %s（权限 600）%s\n' "$C_DIM" "$env_key" "$CS_KEYS" "$C_RESET" >&2
+  return 1
+}
+
+_cs_cmd_ls() {
+  _cs_store init
+  local rows name mark model url envk maxn=4 maxm=5
+  rows=$(_cs_store list)
+  [[ -z "$rows" ]] && { info "还没有供应商，运行 codex-switch add 添加"; return 0; }
+  while IFS=$'\x1f' read -r name mark model url envk; do
+    ((${#name} > maxn)) && maxn=${#name}
+    ((${#model} > maxm)) && maxm=${#model}
+  done <<< "$rows"
+  while IFS=$'\x1f' read -r name mark model url envk; do
+    local disp="$model"
+    [[ "$model" == "official" ]] && disp="官方默认"
+    if [[ "$mark" == "*" ]]; then
+      printf '%s*%s %-*s  %-*s  %s%s%s\n' "$C_GREEN" "$C_RESET" "$maxn" "$name" "$maxm" "$disp" "$C_DIM" "$url" "$C_RESET"
+    else
+      printf '  %-*s  %-*s  %s%s%s\n' "$maxn" "$name" "$maxm" "$disp" "$C_DIM" "$url" "$C_RESET"
+    fi
+  done <<< "$rows"
+}
+
+_cs_cmd_use() {
+  local name="${1:-}"
+  [[ -z "$name" ]] && die "用法: codex-switch use <name>"
+  _cs_store init
+  _cs_store exists "$name" || die "未知供应商: ${name}（用 codex-switch ls 查看，或 codex-switch add 添加）"
+  _cs_source_keys
+
+  local tmp model="" base_url="" env_key="" wire_api=""
+  if _cs_store is_official "$name"; then
+    tmp=$(_cs_apply_config official "$name") || die "写入配置失败（备份未受影响）"
+  else
+    model=$(_cs_store get "$name" model)
+    base_url=$(_cs_store get "$name" base_url)
+    env_key=$(_cs_store get "$name" env_key)
+    wire_api=$(_cs_store get "$name" wire_api)
+    wire_api=${wire_api:-responses}
+    [[ -z "$base_url" || -z "$model" ]] && die "供应商 $name 配置不完整（缺 base_url/model），请用 codex-switch edit 修复"
+    tmp=$(_cs_apply_config provider "$name" "$model" "$base_url" "$env_key" "$wire_api") || die "写入配置失败（备份未受影响）"
+  fi
+
+  if [[ -f "$CS_CONFIG" ]]; then
+    cp -p "$CS_CONFIG" "$CS_CONFIG.bak" || warn "备份 config.toml.bak 失败"
+  fi
+  mkdir -p "$(dirname "$CS_CONFIG")"
+  mv "$tmp" "$CS_CONFIG"
+  chmod 600 "$CS_CONFIG" 2>/dev/null || true
+  _cs_store set_current "$name"
+
+  if _cs_store is_official "$name"; then
+    ok "已恢复官方默认 ($name)"
+    _cs_key_report "OPENAI_API_KEY" || true
+  else
+    ok "已切换到 $name ($model)"
+    printf '  base_url: %s%s%s\n' "$C_DIM" "$base_url" "$C_RESET"
+    _cs_key_report "$env_key" || true
+  fi
+}
+
+_cs_cmd_status() {
+  _cs_store init
+  _cs_source_keys
+  local cur cfg cfg_model cfg_provider
+  cur=$(_cs_store current)
+  cfg=$(_cs_config_state)
+  cfg_model=${cfg%%$'\t'*}
+  cfg_provider=${cfg##*$'\t'}
+
+  if [[ -z "$cur" ]]; then
+    printf '%s当前供应商:%s (未设置，用 codex-switch use <name> 切换)\n' "$C_BOLD" "$C_RESET"
+  else
+    printf '%s当前供应商:%s %s\n' "$C_BOLD" "$C_RESET" "$cur"
+  fi
+
+  if [[ -n "$cur" ]] && _cs_store exists "$cur"; then
+    if _cs_store is_official "$cur"; then
+      printf '  模式:     官方默认\n'
+      _cs_key_report "OPENAI_API_KEY" || true
+    else
+      printf '  model:    %s\n' "$(_cs_store get "$cur" model)"
+      printf '  base_url: %s\n' "$(_cs_store get "$cur" base_url)"
+      printf '  wire_api: %s\n' "$(_cs_store get "$cur" wire_api)"
+      _cs_key_report "$(_cs_store get "$cur" env_key)" || true
+    fi
+  fi
+
+  printf '%sconfig.toml:%s %s\n' "$C_BOLD" "$C_RESET" "$CS_CONFIG"
+  if [[ -f "$CS_CONFIG" ]]; then
+    printf '  model:          %s\n' "${cfg_model:-(默认)}"
+    printf '  model_provider: %s\n' "${cfg_provider:-(默认)}"
+    [[ -f "$CS_CONFIG.bak" ]] && printf '  备份:           %sconfig.toml.bak 存在%s\n' "$C_DIM" "$C_RESET"
+    if [[ -n "$cur" ]] && _cs_store exists "$cur"; then
+      local expected=""
+      _cs_store is_official "$cur" || expected="$cur"
+      [[ "$cfg_provider" != "$expected" ]] && \
+        warn "store 记录当前为 ${cur}，但 config.toml 的 model_provider=${cfg_provider:-(默认)}；如非手改，用 codex-switch use $cur 重新对齐"
+    elif [[ -z "$cur" && -n "$cfg_provider" ]]; then
+      warn "config.toml 的 model_provider=${cfg_provider}，但 codex-switch 未记录当前供应商（可能手改过配置）"
+    fi
+  else
+    printf '  %s(文件不存在，use 时会自动创建)%s\n' "$C_DIM" "$C_RESET"
+  fi
+
+  printf '%skeys.env:%s ' "$C_BOLD" "$C_RESET"
+  if [[ -f "$CS_KEYS" ]]; then
+    local perm
+    perm=$(stat -f '%Lp' "$CS_KEYS" 2>/dev/null || stat -c '%a' "$CS_KEYS" 2>/dev/null || echo "?")
+    printf '存在 (权限 %s)\n' "$perm"
+  else
+    printf '%s不存在（可选，用于自动 source key）%s\n' "$C_DIM" "$C_RESET"
+  fi
+}
+
+_cs_cmd_test() {
+  _cs_store init
+  _cs_source_keys
+  local name="${1:-}"
+  [[ -z "$name" ]] && name=$(_cs_store current)
+  [[ -z "$name" ]] && die "尚未选择供应商，先 codex-switch use <name>"
+  _cs_store exists "$name" || die "未知供应商: $name"
+
+  local model base_url env_key wire_api key url payload
+  if _cs_store is_official "$name"; then
+    base_url="https://api.openai.com/v1"
+    env_key="OPENAI_API_KEY"
+    wire_api="responses"
+    model=$(_cs_config_state)
+    model=${model%%$'\t'*}
+    model=${model:-gpt-5}
+  else
+    model=$(_cs_store get "$name" model)
+    base_url=$(_cs_store get "$name" base_url)
+    env_key=$(_cs_store get "$name" env_key)
+    wire_api=$(_cs_store get "$name" wire_api)
+    wire_api=${wire_api:-responses}
+  fi
+  [[ -z "$base_url" ]] && die "供应商 $name 缺 base_url"
+
+  if [[ "$wire_api" == "chat" ]]; then
+    url="${base_url%/}/chat/completions"
+    payload=$(python3 -c 'import json,sys; print(json.dumps({"model":sys.argv[1],"messages":[{"role":"user","content":"ping"}],"max_tokens":1}))' "$model")
+  else
+    url="${base_url%/}/responses"
+    payload=$(python3 -c 'import json,sys; print(json.dumps({"model":sys.argv[1],"input":"ping","max_output_tokens":16}))' "$model")
+  fi
+
+  local auth=()
+  key=${!env_key:-}
+  if [[ -n "$key" ]]; then
+    auth=(-H "Authorization: Bearer $key")
+  else
+    warn "$env_key 未设置，本次为无鉴权探测"
+  fi
+
+  info "POST $url"
+  local resp http code secs ms
+  resp=$(mktemp "${TMPDIR:-/tmp}/codex-switch.XXXXXX")
+  if ! http=$(curl -sS -o "$resp" -w '%{http_code} %{time_total}' --max-time 20 \
+      -X POST "$url" -H 'Content-Type: application/json' ${auth[@]+"${auth[@]}"} -d "$payload"); then
+    err "$name 连接失败：网络不可达或超时"
+    rm -f "$resp"
+    exit 1
+  fi
+  code=${http%% *}
+  secs=${http##* }
+  ms=$(awk "BEGIN{printf \"%d\", $secs*1000}")
+
+  case "$code" in
+    2*)
+      ok "$name 连通正常 (HTTP $code, latency ${ms}ms)" ;;
+    401|403)
+      warn "$name 网络可达但鉴权失败 (HTTP $code, latency ${ms}ms)，请检查 $env_key" ;;
+    404)
+      warn "$name 可达但端点 404 (latency ${ms}ms)，请检查 base_url / wire_api" ;;
+    000)
+      err "$name 连接失败 (curl 无响应)" ;;
+    *)
+      warn "$name 可达，HTTP $code (latency ${ms}ms)" ;;
+  esac
+  if [[ "$code" != 2* && -s "$resp" ]]; then
+    printf '%s  响应: %.300s%s\n' "$C_DIM" "$(cat "$resp")" "$C_RESET" >&2
+  fi
+  rm -f "$resp"
+  [[ "$code" == 2* || "$code" == 401 || "$code" == 403 || "$code" == 404 ]]
+}
+
+_cs_cmd_add() {
+  _cs_store init
+  local name base_url model env_key wire_api ans
+  read -rp "供应商名称 (如 go): " name
+  [[ -z "$name" ]] && die "名称不能为空"
+  [[ "$name" =~ ^[A-Za-z0-9_-]+$ ]] || die "名称只能包含字母、数字、_、-"
+  if _cs_store exists "$name"; then
+    read -rp "已存在 ${name}，覆盖? [y/N] " ans
+    [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消"; return 0; }
+  fi
+  read -rp "base_url (如 https://opencode.ai/zen/go/v1): " base_url
+  [[ -z "$base_url" ]] && die "base_url 不能为空"
+  [[ "$base_url" =~ ^https?:// ]] || die "base_url 必须以 http:// 或 https:// 开头"
+  read -rp "model (如 deepseek-v4-flash): " model
+  [[ -z "$model" ]] && die "model 不能为空"
+  local default_key="OPENCODE_$(tr 'a-z-' 'A-Z_' <<<"$name")_KEY"
+  read -rp "env_key [$default_key]: " env_key
+  env_key=${env_key:-$default_key}
+  [[ "$env_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "env_key 必须是合法 shell 变量名（字母或下划线开头，仅含字母/数字/下划线）"
+  read -rp "wire_api [responses]: " wire_api
+  wire_api=${wire_api:-responses}
+
+  local json
+  json=$(python3 -c 'import json,sys; print(json.dumps({"base_url":sys.argv[1],"model":sys.argv[2],"wire_api":sys.argv[3],"env_key":sys.argv[4]}))' \
+    "$base_url" "$model" "$wire_api" "$env_key")
+  _cs_store upsert "$name" "$json"
+  ok "已添加 $name ($model)"
+
+  read -rp "现在把 key 写入 $CS_KEYS 吗? [y/N] " ans
+  if [[ "$ans" =~ ^[Yy]$ ]]; then
+    local secret
+    read -rsp "$env_key = " secret
+    printf '\n'
+    if [[ -n "$secret" ]]; then
+      touch "$CS_KEYS"
+      chmod 600 "$CS_KEYS"
+      if grep -q "^export $env_key=" "$CS_KEYS" 2>/dev/null; then
+        local tmpk
+        tmpk=$(mktemp "${TMPDIR:-/tmp}/codex-switch-keys.XXXXXX")
+        grep -v "^export $env_key=" "$CS_KEYS" > "$tmpk" || true
+        mv "$tmpk" "$CS_KEYS"
+        chmod 600 "$CS_KEYS"
+      fi
+      printf 'export %s=%s\n' "$env_key" "$(python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$secret")" >> "$CS_KEYS"
+      ok "已写入 $CS_KEYS (权限 600)"
+    fi
+  fi
+
+  printf '  下一步:\n'
+  printf '    export %s="your-key"   %s或写入 %s%s\n' "$env_key" "$C_DIM" "$CS_KEYS" "$C_RESET"
+  printf '    codex-switch use %s\n' "$name"
+}
+
+_cs_cmd_rm() {
+  local name="${1:-}" flag="${2:-}"
+  [[ -z "$name" ]] && die "用法: codex-switch rm <name> [-y]"
+  _cs_store init
+  _cs_store exists "$name" || die "未知供应商: $name"
+  local interactive=1
+  [[ "$flag" == "-y" || "$flag" == "--yes" ]] && interactive=0
+  if [[ "$interactive" == 1 ]]; then
+    local ans
+    read -rp "确认删除 $name? [y/N] " ans
+    [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消"; return 0; }
+  fi
+  local was_current=""
+  was_current=$(_cs_store current)
+  _cs_store delete "$name"
+  ok "已删除 $name"
+  if [[ "$was_current" == "$name" ]]; then
+    if [[ "$interactive" == 1 ]] && _cs_store exists openai; then
+      local back
+      read -rp "删除的是当前供应商，切回官方默认 (openai)? [Y/n] " back
+      if [[ ! "$back" =~ ^[Nn]$ ]]; then
+        _cs_cmd_use openai
+        return 0
+      fi
+    fi
+    warn "config.toml 未改动，仍指向已删除的 ${name}；请用 codex-switch use <name> 切换"
+  else
+    printf '  %s（config.toml 未改动）%s\n' "$C_DIM" "$C_RESET"
+  fi
+}
+
+_cs_cmd_edit() {
+  _cs_store init
+  "${EDITOR:-vi}" "$CS_STORE"
+  if python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$CS_STORE" 2>/dev/null; then
+    ok "providers.json JSON 合法"
+  else
+    err "providers.json JSON 非法，请修复: $CS_STORE"
+    return 1
+  fi
+}
+
+_cs_cmd_interactive() {
+  _cs_store init
+  if ! command -v fzf >/dev/null 2>&1; then
+    _cs_cmd_ls
+    printf '\n%s安装 fzf 后可直接交互选择；用法见 codex-switch help%s\n' "$C_DIM" "$C_RESET"
+    return 0
+  fi
+  local line name
+  line=$(_cs_store list | awk 'BEGIN{FS=sprintf("%c",31)} { if ($3=="official") printf "%-12s %s\n", $1, "官方默认"; else printf "%-12s %-22s %s\n", $1, $3, $4 }' \
+    | fzf --prompt='codex-switch> ' --header='选择供应商 (enter 切换, esc 取消)' --height=~40% --reverse) || return 0
+  [[ -z "$line" ]] && return 0
+  name=$(awk '{print $1}' <<<"$line")
+  _cs_cmd_use "$name"
+}
+
+_cs_rc_file() {
+  case "${SHELL:-}" in
+    */zsh)  printf '%s\n' "$HOME/.zshrc" ;;
+    */bash) printf '%s\n' "$HOME/.bashrc" ;;
+    *)      printf '%s\n' "$HOME/.profile" ;;
+  esac
+}
+
+_cs_cmd_install() {
+  local self bin_dir target rc changed=0
+  self="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/$(basename "${BASH_SOURCE[0]:-$0}")"
+  bin_dir="$HOME/bin"
+  target="$bin_dir/codex-switch"
+  rc=$(_cs_rc_file)
+
+  mkdir -p "$bin_dir"
+  if [[ "$self" == "$target" ]]; then
+    ok "已就位: $target"
+  elif [[ -L "$target" && "$(readlink "$target")" == "$self" ]]; then
+    ok "已链接: $target -> $self"
+  else
+    if [[ -L "$target" ]]; then
+      mv "$target" "$target.pre-switch.bak"
+      info "旧链接已备份为 $target.pre-switch.bak -> $(readlink "$target.pre-switch.bak")"
+    elif [[ -e "$target" ]]; then
+      cp -p "$target" "$target.pre-switch.bak"
+      info "旧版本已备份为 $target.pre-switch.bak"
+    fi
+    ln -sfn "$self" "$target"
+    ok "已链接: $target -> ${self}（仓库更新即生效）"
+  fi
+
+  touch "$rc"
+  if [[ ":$PATH:" == *":$bin_dir:"* ]]; then
+    ok "PATH 已包含 $bin_dir"
+  elif grep -q '# codex-switch PATH' "$rc" 2>/dev/null; then
+    ok "PATH 配置已存在于 $rc"
+  else
+    printf '\n# codex-switch PATH\nexport PATH="%s:$PATH"\n' "$bin_dir" >> "$rc"
+    ok "已向 $rc 追加 PATH: $bin_dir"
+    changed=1
+  fi
+
+  if grep -q "alias cs='codex-switch'" "$rc" 2>/dev/null; then
+    ok "alias cs 已存在于 $rc"
+  else
+    printf "alias cs='codex-switch'\n" >> "$rc"
+    ok "已向 $rc 追加 alias cs='codex-switch'"
+    changed=1
+  fi
+
+  if [[ "$changed" == 1 ]]; then
+    printf '\n  新开终端生效，或现在执行: %ssource %s%s\n' "$C_BOLD" "$rc" "$C_RESET"
+  fi
+}
+
+_cs_cmd_uninstall() {
+  local purge=0
+  [[ "${1:-}" == "--purge" ]] && purge=1
+  local self bin_dir target rc
+  self="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/$(basename "${BASH_SOURCE[0]:-$0}")"
+  [[ -L "$self" ]] && self=$(readlink "$self")
+  bin_dir="$HOME/bin"
+  target="$bin_dir/codex-switch"
+  rc=$(_cs_rc_file)
+
+  local cur=""
+  cur=$(_cs_store current 2>/dev/null || true)
+  if [[ -n "$cur" ]] && ! _cs_store is_official "$cur" 2>/dev/null; then
+    local ans tmp
+    read -rp "当前供应商是 ${cur}，卸载前切回官方默认? [Y/n] " ans || ans=""
+    if [[ ! "$ans" =~ ^[Nn]$ ]]; then
+      if tmp=$(_cs_apply_config official openai); then
+        [[ -f "$CS_CONFIG" ]] && cp -p "$CS_CONFIG" "$CS_CONFIG.bak" 2>/dev/null || true
+        mkdir -p "$(dirname "$CS_CONFIG")"
+        mv "$tmp" "$CS_CONFIG"
+        chmod 600 "$CS_CONFIG" 2>/dev/null || true
+        _cs_store set_current openai 2>/dev/null || true
+        ok "已切回官方默认（config.toml 中的 model/model_provider 已移除）"
+      else
+        warn "切回失败，config.toml 保持不变，可手动检查 $CS_CONFIG"
+      fi
+    else
+      warn "保留当前配置，$CS_CONFIG 仍指向 $cur"
+    fi
+  fi
+
+  if [[ -L "$target" ]]; then
+    rm -f "$target"
+    ok "已删除链接: $target"
+  elif [[ -f "$target" ]] && grep -q '_cs_cmd_uninstall' "$target" 2>/dev/null; then
+    rm -f "$target"
+    ok "已删除: $target"
+  elif [[ -e "$target" ]]; then
+    warn "$target 存在但不是本工具安装的，跳过删除"
+  fi
+
+  if [[ -f "$rc" ]] && grep -q -e '# codex-switch PATH' -e "alias cs='codex-switch'" "$rc" 2>/dev/null; then
+    local tmpr
+    tmpr=$(mktemp "${TMPDIR:-/tmp}/codex-switch-rc.XXXXXX")
+    awk '
+      /# codex-switch PATH/ { skip=1; next }
+      skip && /^export PATH=/ { skip=0; next }
+      $0 == "alias cs='"'"'codex-switch'"'"'" { next }
+      { print }
+    ' "$rc" > "$tmpr"
+    cp -p "$rc" "$rc.codex-switch.bak"
+    mv "$tmpr" "$rc"
+    ok "已从 $rc 移除 PATH / alias（备份: $rc.codex-switch.bak）"
+  fi
+
+  if [[ -d "$CS_HOME" ]]; then
+    if [[ "$purge" == 1 ]]; then
+      rm -rf "$CS_HOME"
+      ok "已删除数据目录: $CS_HOME"
+    else
+      info "保留数据目录: ${CS_HOME}（彻底删除用 codex-switch uninstall --purge）"
+    fi
+  fi
+
+  printf '\n  %s卸载完成。仓库目录未删除:%s %s\n' "$C_DIM" "$C_RESET" "$(dirname "$self")"
+  printf '  新开终端生效，或执行: %ssource %s%s\n' "$C_BOLD" "$rc" "$C_RESET"
+}
+
+_cs_cmd_doctor() {
+  local fail=0
+  printf '%s环境%s\n' "$C_BOLD" "$C_RESET"
+  if command -v python3 >/dev/null; then
+    ok "python3: $(python3 --version 2>&1)"
+  else
+    err "python3 未安装"; fail=1
+  fi
+  if python3 -c 'import tomllib' 2>/dev/null; then
+    ok "tomllib 可用（严格校验）"
+  else
+    warn "tomllib 不可用 (python < 3.11)，降级为轻量校验"
+  fi
+  command -v curl >/dev/null && ok "curl 可用" || { err "curl 未安装"; fail=1; }
+  command -v fzf >/dev/null && ok "fzf 可用（无参数交互模式开启）" || warn "fzf 未安装（可选，无参数交互模式不可用）"
+
+  printf '%s数据%s\n' "$C_BOLD" "$C_RESET"
+  _cs_store init
+  if python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$CS_STORE" 2>/dev/null; then
+    ok "providers.json 合法 ($CS_STORE)"
+  else
+    err "providers.json 损坏: $CS_STORE"; fail=1
+  fi
+  if [[ -f "$CS_KEYS" ]]; then
+    local perm
+    perm=$(stat -f '%Lp' "$CS_KEYS" 2>/dev/null || stat -c '%a' "$CS_KEYS" 2>/dev/null || echo "?")
+    if [[ "${perm: -3}" == "600" ]]; then
+      ok "keys.env 存在且权限 600"
+    else
+      warn "keys.env 权限为 ${perm}，建议 chmod 600 $CS_KEYS"
+    fi
+  else
+    info "keys.env 不存在（可选）"
+  fi
+
+  printf '%s配置%s\n' "$C_BOLD" "$C_RESET"
+  if [[ -f "$CS_CONFIG" ]]; then
+    if python3 - "$CS_CONFIG" <<'PY' >/dev/null 2>&1
+import sys
+try:
+    import tomllib
+    with open(sys.argv[1], "rb") as f:
+        tomllib.load(f)
+except ImportError:
+    pass
+PY
+    then
+      ok "config.toml 语法正常"
+    else
+      err "config.toml 语法错误: ${CS_CONFIG}（可尝试用 config.toml.bak 恢复）"; fail=1
+    fi
+  else
+    warn "config.toml 不存在（use 时会自动创建）"
+  fi
+
+  local cur
+  cur=$(_cs_store current)
+  if [[ -n "$cur" ]]; then
+    ok "当前供应商: $cur"
+    _cs_source_keys
+    local env_key="OPENAI_API_KEY"
+    _cs_store is_official "$cur" || env_key=$(_cs_store get "$cur" env_key)
+    if [[ -n "$env_key" ]]; then
+      [[ -n "${!env_key:-}" ]] && ok "$env_key 已 export" || warn "$env_key 未 export"
+    fi
+  else
+    warn "尚未选择供应商"
+  fi
+  info "连通性检查请运行: codex-switch test"
+  return "$fail"
+}
+
+_cs_usage() {
+  cat <<EOF
+${C_BOLD}codex-switch${C_RESET} — Codex CLI 模型供应商切换工具 (v$VERSION)
+
+${C_BOLD}用法:${C_RESET}
+  codex-switch              fzf 交互选择（未装 fzf 时等同 ls）
+  codex-switch ls           列出供应商（* 为当前）
+  codex-switch use <name>   切换供应商；openai 为官方默认
+  codex-switch status       当前状态 + key 检查
+  codex-switch test [name]  冒烟测试连通性 + 延迟
+  codex-switch add          交互式添加供应商（可选写入 keys.env）
+  codex-switch rm <name>    删除供应商（-y 跳过确认）
+  codex-switch edit         用 \$EDITOR 编辑 providers.json
+  codex-switch doctor       配置健康检查
+  codex-switch install      链接到 ~/bin 并配置 PATH + alias cs
+  codex-switch uninstall    卸载（--purge 同时删除数据目录）
+  codex-switch version      显示版本
+  codex-switch help         显示本帮助
+
+${C_BOLD}存储:${C_RESET}
+  供应商清单  $CS_STORE
+  可选 key    $CS_KEYS (权限 600，use/status/test 前自动 source)
+  Codex 配置  ${CS_CONFIG}（只改 model / model_provider / [model_providers.*]，其余原样保留，写入前备份 .bak）
+
+${C_BOLD}提示:${C_RESET} alias cs='codex-switch'
+EOF
+}
+
+main() {
+  local cmd="${1:-}"
+  case "$cmd" in
+    "") _cs_cmd_interactive ;;
+    ls|list) _cs_cmd_ls ;;
+    use) shift; _cs_cmd_use "$@" ;;
+    status|st) _cs_cmd_status ;;
+    test) shift; _cs_cmd_test "$@" ;;
+    add) _cs_cmd_add ;;
+    rm|remove|del) shift; _cs_cmd_rm "$@" ;;
+    edit) _cs_cmd_edit ;;
+    doctor) _cs_cmd_doctor ;;
+    install) _cs_cmd_install ;;
+    uninstall) shift; _cs_cmd_uninstall "$@" ;;
+    current) _cs_store current ;;
+    version|--version|-V) echo "codex-switch $VERSION" ;;
+    help|--help|-h) _cs_usage ;;
+    *) err "未知命令: $cmd"; _cs_usage; exit 1 ;;
+  esac
+}
+
+main "$@"
