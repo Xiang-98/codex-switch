@@ -8,8 +8,9 @@
 - 无参数时调用 `fzf` 交互选择（未安装 fzf 自动降级为列表）
 - **安全改写 `~/.codex/config.toml`**：只修改顶层 `model`、`model_provider` 和对应 `[model_providers.<name>]` 段，其余段（`[plugins.*]`、`[desktop]` 等）原样保留
 - 写入前自动备份 `config.toml.bak`，临时文件 + `mv` 原子写入
-- **API key 安全**：不写入 `providers.json` 或 Codex 配置，`use`/`status` 只检查环境变量是否 export；仅在你显式同意时才写入可选 `~/.codex-switch/keys.env`（权限 600）自动 source
-- 内置冒烟测试：`curl` 一次 `/responses`（或 `/chat/completions`）端点，显示 HTTP 状态和延迟
+- **API key 安全**：不写入 `providers.json` 或 Codex 配置；仅在你显式同意时写入 `~/.codex-switch/keys.env`（权限 600），Codex 通过本地凭据命令按需读取
+- **桌面端免重启切换**：`use` 后新建 Codex 任务即可生效，无需退出应用
+- 内置冒烟测试：`curl` 一次 `/responses` 端点，显示 HTTP 状态和延迟
 - 零依赖：bash 3.2+ + 系统自带 python3 + curl；`fzf` 可选
 - 附赠命令：`edit`（$EDITOR 编辑清单）、`doctor`（健康检查）、`install`（自动配置 PATH 和别名）、`update` / `upgrade`（安全更新）
 
@@ -45,15 +46,14 @@ codex-switch uninstall --purge   # 额外删除数据目录 ~/.codex-switch
 $ codex-switch add
 供应商名称 (如 go): go
 base_url (如 https://opencode.ai/zen/go/v1): https://opencode.ai/zen/go/v1
-model (如 deepseek-v4-flash): deepseek-v4-flash
+model (如 gpt-5.6-luna): gpt-5.6-luna
 env_key（变量名，不是 API key）[OPENCODE_GO_KEY]:
-wire_api [responses，可选 chat]:
 现在把 key 写入 ~/.codex-switch/keys.env 吗? [y/N] y
 OPENCODE_GO_KEY = ********
-✓ 已添加 go (deepseek-v4-flash)
+✓ 已添加 go (gpt-5.6-luna)
 
 $ codex-switch use go
-✓ 已切换到 go (deepseek-v4-flash)
+✓ 已切换到 go (gpt-5.6-luna)
   base_url: https://opencode.ai/zen/go/v1
   key: OPENCODE_GO_KEY ✓ 已设置
 
@@ -62,7 +62,7 @@ $ codex-switch test
 ✓ go 连通正常 (HTTP 200, latency 412ms)
 
 $ codex-switch ls
-* go      deepseek-v4-flash  https://opencode.ai/zen/go/v1
+* go      gpt-5.6-luna  https://opencode.ai/zen/go/v1
   openai  官方默认
 ```
 
@@ -76,6 +76,7 @@ $ codex-switch ls
 | `codex-switch status` | 当前供应商 + config.toml 实际状态 + key 检查 + 配置不一致告警 |
 | `codex-switch test [name]` | 冒烟测试连通性和延迟 |
 | `codex-switch add` | 交互式添加供应商，可选写入 key 到 keys.env |
+| `codex-switch key <name>` | 安全更新供应商的 API Key，无需重新填写供应商配置 |
 | `codex-switch rm <name> [-y]` | 删除供应商；删的是当前项时会提示切回官方默认 |
 | `codex-switch edit` | 用 `$EDITOR` 编辑 providers.json，保存后校验 JSON |
 | `codex-switch doctor` | 健康检查（python3 / tomllib / curl / fzf / 配置语法 / key） |
@@ -93,7 +94,7 @@ $ codex-switch ls
   "providers": {
     "go": {
       "base_url": "https://opencode.ai/zen/go/v1",
-      "model": "deepseek-v4-flash",
+      "model": "gpt-5.6-luna",
       "wire_api": "responses",
       "env_key": "OPENCODE_GO_KEY"
     },
@@ -104,10 +105,12 @@ $ codex-switch ls
 
 带 `official: true` 的条目表示官方默认：切换时删掉 `config.toml` 里的 `model` / `model_provider` 行恢复默认。
 
+当前 Codex 仅支持 `wire_api = "responses"`，因此供应商必须提供兼容的 `/responses` 接口。
+
 ## 工作原理（use）
 
 1. 读取 `~/.codex/config.toml`
-2. 内嵌 python3 做行级手术：替换顶层 `model` / `model_provider`，重写目标 `[model_providers.<name>]` 段，其他所有段逐字保留
+2. 内嵌 python3 做行级手术：替换顶层 `model` / `model_provider`，重写目标 `[model_providers.<name>]` 及其 `.auth` 段，其他所有段逐字保留
 3. 有 tomllib（python ≥ 3.11）时写入前后各做一次严格 toml 校验，否则降级为轻量检查
 4. 写入前备份为 `config.toml.bak`
 5. 临时文件 + `mv` 原子替换，权限收紧为 600
@@ -115,8 +118,9 @@ $ codex-switch ls
 ## API Key 原则
 
 - key 不写入 `providers.json` 或 Codex 配置；仅 `add` 时显式同意才会写入 `keys.env`
-- `use` / `status` 只检查对应 `env_key` 环境变量是否已 export，未设置则提示
-- 可选：`~/.codex-switch/keys.env` 中写 `export XXX_KEY="..."`，权限 600，`use` / `status` / `test` 前自动 source
+- `~/.codex-switch/keys.env` 中以 `export XXX_KEY="..."` 保存，权限固定为 600
+- `config.toml` 只记录本脚本的凭据读取命令和变量名，不包含 Key
+- Codex 请求模型时按需执行凭据命令，因此桌面端无需继承 shell 环境，也无需重启；切换后新建任务即可
 
 ## 环境变量
 

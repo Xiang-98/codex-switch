@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 CS_HOME="${CODEX_SWITCH_HOME:-$HOME/.codex-switch}"
 CS_STORE="$CS_HOME/providers.json"
 CS_KEYS="$CS_HOME/keys.env"
@@ -122,6 +122,8 @@ model = sys.argv[4] if len(sys.argv) > 4 else ""
 base_url = sys.argv[5] if len(sys.argv) > 5 else ""
 env_key = sys.argv[6] if len(sys.argv) > 6 else ""
 wire_api = sys.argv[7] if len(sys.argv) > 7 else "responses"
+auth_command = sys.argv[8] if len(sys.argv) > 8 else ""
+keys_file = sys.argv[9] if len(sys.argv) > 9 else ""
 
 text = ""
 if os.path.exists(path):
@@ -154,7 +156,7 @@ if text.strip() and not validate(text, "现有 config.toml"):
 # model = 的行会被误判（Codex 配置里概率极低）；写后 validate() 会兜住绝大多数破坏。
 section_re = re.compile(r"^\s*\[")
 kv_re = re.compile(r'^\s*(model|model_provider)\s*=')
-target_re = re.compile(r"^\s*\[model_providers\." + re.escape(name) + r"\]\s*$")
+target_re = re.compile(r"^\s*\[model_providers\." + re.escape(name) + r"(?:\.[^\]]+)?\]\s*$")
 
 header_lines = []
 sections = []
@@ -178,11 +180,20 @@ if mode == "provider":
                   "model_provider = " + json.dumps(name)] + new_header
     sections = [s for s in sections if not target_re.match(s[0])]
     body = ["name = " + json.dumps(name),
-            "base_url = " + json.dumps(base_url)]
-    if env_key:
-        body.append("env_key = " + json.dumps(env_key))
-    body.append("wire_api = " + json.dumps(wire_api))
+            "base_url = " + json.dumps(base_url),
+            "wire_api = " + json.dumps(wire_api)]
     sections.append(["[model_providers." + name + "]", body])
+    if env_key:
+        if not auth_command or not keys_file:
+            sys.stderr.write("✗ 缺少命令式认证配置\n")
+            sys.exit(1)
+        auth_body = [
+            "command = " + json.dumps(auth_command),
+            "args = " + json.dumps(["_auth-token", keys_file, env_key]),
+            "timeout_ms = 5000",
+            "refresh_interval_ms = 30000",
+        ]
+        sections.append(["[model_providers." + name + ".auth]", auth_body])
 
 while new_header and not new_header[0].strip():
     new_header.pop(0)
@@ -256,6 +267,42 @@ _cs_source_keys() {
   set +a
 }
 
+_cs_save_key() {
+  local env_key="$1" secret="$2" tmpk
+  [[ "$env_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "env_key 非法，拒绝写入 keys.env"
+  mkdir -p "$(dirname "$CS_KEYS")"
+  touch "$CS_KEYS"
+  chmod 600 "$CS_KEYS"
+  if grep -q "^export $env_key=" "$CS_KEYS" 2>/dev/null; then
+    tmpk=$(mktemp "${TMPDIR:-/tmp}/codex-switch-keys.XXXXXX")
+    grep -v "^export $env_key=" "$CS_KEYS" > "$tmpk" || true
+    mv "$tmpk" "$CS_KEYS"
+    chmod 600 "$CS_KEYS"
+  fi
+  printf 'export %s=%s\n' "$env_key" "$(python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$secret")" >> "$CS_KEYS"
+}
+
+_cs_cmd_auth_token() {
+  local key_file="${1:-}" env_key="${2:-}" value=""
+  [[ "$env_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || {
+    err "凭据变量名非法"
+    return 2
+  }
+
+  value=${!env_key:-}
+  if [[ -z "$value" && -f "$key_file" ]]; then
+    set -a
+    . "$key_file"
+    set +a
+    value=${!env_key:-}
+  fi
+  [[ -n "$value" ]] || {
+    err "$env_key 未设置或 $key_file 中不存在该变量"
+    return 1
+  }
+  printf '%s' "$value"
+}
+
 _cs_key_report() {
   local env_key="$1"
   if [[ -z "$env_key" ]]; then
@@ -298,7 +345,7 @@ _cs_cmd_use() {
   _cs_store exists "$name" || die "未知供应商: ${name}（用 codex-switch ls 查看，或 codex-switch add 添加）"
   _cs_source_keys
 
-  local tmp model="" base_url="" env_key="" wire_api=""
+  local tmp model="" base_url="" env_key="" wire_api="" auth_command=""
   if _cs_store is_official "$name"; then
     tmp=$(_cs_apply_config official "$name") || die "写入配置失败（备份未受影响）"
   else
@@ -308,7 +355,11 @@ _cs_cmd_use() {
     wire_api=$(_cs_store get "$name" wire_api)
     wire_api=${wire_api:-responses}
     [[ -z "$base_url" || -z "$model" ]] && die "供应商 $name 配置不完整（缺 base_url/model），请用 codex-switch edit 修复"
-    tmp=$(_cs_apply_config provider "$name" "$model" "$base_url" "$env_key" "$wire_api") || die "写入配置失败（备份未受影响）"
+    [[ "$wire_api" == "responses" ]] || die "当前 Codex 仅支持 wire_api=responses；请确认供应商支持 /responses 后重新添加"
+    if [[ -n "$env_key" ]]; then
+      auth_command=$(_cs_script_path) || die "无法解析凭据读取命令路径"
+    fi
+    tmp=$(_cs_apply_config provider "$name" "$model" "$base_url" "$env_key" "$wire_api" "$auth_command" "$CS_KEYS") || die "写入配置失败（备份未受影响）"
   fi
 
   if [[ -f "$CS_CONFIG" ]]; then
@@ -327,6 +378,7 @@ _cs_cmd_use() {
     printf '  base_url: %s%s%s\n' "$C_DIM" "$base_url" "$C_RESET"
     _cs_key_report "$env_key" || true
   fi
+  info "Codex 桌面端无需重启；新建任务后生效"
 }
 
 _cs_cmd_status() {
@@ -408,13 +460,9 @@ _cs_cmd_test() {
   fi
   [[ -z "$base_url" ]] && die "供应商 $name 缺 base_url"
 
-  if [[ "$wire_api" == "chat" ]]; then
-    url="${base_url%/}/chat/completions"
-    payload=$(python3 -c 'import json,sys; print(json.dumps({"model":sys.argv[1],"messages":[{"role":"user","content":"ping"}],"max_tokens":1}))' "$model")
-  else
-    url="${base_url%/}/responses"
-    payload=$(python3 -c 'import json,sys; print(json.dumps({"model":sys.argv[1],"input":"ping","max_output_tokens":16}))' "$model")
-  fi
+  [[ "$wire_api" == "responses" ]] || die "当前 Codex 仅支持 wire_api=responses"
+  url="${base_url%/}/responses"
+  payload=$(python3 -c 'import json,sys; print(json.dumps({"model":sys.argv[1],"input":"ping","max_output_tokens":16}))' "$model")
 
   local auth=()
   key=${!env_key:-}
@@ -441,7 +489,7 @@ _cs_cmd_test() {
     2*)
       ok "$name 连通正常 (HTTP $code, latency ${ms}ms)" ;;
     401|403)
-      warn "$name 网络可达但鉴权失败 (HTTP $code, latency ${ms}ms)，请检查 $env_key" ;;
+      warn "$name 网络可达但鉴权失败 (HTTP $code, latency ${ms}ms)，请运行 codex-switch key $name 更新 $env_key" ;;
     404)
       warn "$name 可达但端点 404 (latency ${ms}ms)，请检查 base_url / wire_api" ;;
     000)
@@ -453,12 +501,12 @@ _cs_cmd_test() {
     printf '%s  响应: %.300s%s\n' "$C_DIM" "$(cat "$resp")" "$C_RESET" >&2
   fi
   rm -f "$resp"
-  [[ "$code" == 2* || "$code" == 401 || "$code" == 403 || "$code" == 404 ]]
+  [[ "$code" == 2* ]]
 }
 
 _cs_cmd_add() {
   _cs_store init
-  local name base_url model env_key wire_api ans
+  local name base_url model env_key wire_api="responses" ans
   while true; do
     read -rp "供应商名称 (如 go): " name
     if [[ -z "$name" ]]; then
@@ -490,7 +538,7 @@ _cs_cmd_add() {
   done
 
   while true; do
-    read -rp "model (如 deepseek-v4-flash): " model
+    read -rp "model (如 gpt-5.6-luna): " model
     if [[ -z "$model" ]]; then
       err "model 不能为空，请重新输入"
       continue
@@ -509,15 +557,6 @@ _cs_cmd_add() {
     break
   done
 
-  while true; do
-    read -rp "wire_api [responses，可选 chat]: " wire_api
-    wire_api=${wire_api:-responses}
-    case "$wire_api" in
-      responses|chat) break ;;
-      *) err "wire_api 仅支持 responses 或 chat，请重新输入" ;;
-    esac
-  done
-
   local json
   json=$(python3 -c 'import json,sys; print(json.dumps({"base_url":sys.argv[1],"model":sys.argv[2],"wire_api":sys.argv[3],"env_key":sys.argv[4]}))' \
     "$base_url" "$model" "$wire_api" "$env_key")
@@ -530,23 +569,34 @@ _cs_cmd_add() {
     read -rsp "$env_key = " secret
     printf '\n'
     if [[ -n "$secret" ]]; then
-      touch "$CS_KEYS"
-      chmod 600 "$CS_KEYS"
-      if grep -q "^export $env_key=" "$CS_KEYS" 2>/dev/null; then
-        local tmpk
-        tmpk=$(mktemp "${TMPDIR:-/tmp}/codex-switch-keys.XXXXXX")
-        grep -v "^export $env_key=" "$CS_KEYS" > "$tmpk" || true
-        mv "$tmpk" "$CS_KEYS"
-        chmod 600 "$CS_KEYS"
-      fi
-      printf 'export %s=%s\n' "$env_key" "$(python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$secret")" >> "$CS_KEYS"
+      _cs_save_key "$env_key" "$secret"
       ok "已写入 $CS_KEYS (权限 600)"
+    else
+      warn "Key 为空，未写入"
     fi
   fi
 
-  printf '  下一步:\n'
-  printf '    export %s="your-key"   %s或写入 %s%s\n' "$env_key" "$C_DIM" "$CS_KEYS" "$C_RESET"
-  printf '    codex-switch use %s\n' "$name"
+  printf '  下一步: codex-switch use %s\n' "$name"
+  if [[ ! "$ans" =~ ^[Yy]$ ]]; then
+    printf '  %sCLI 可 export %s="your-key"；桌面端建议重新 add 并选择写入 keys.env%s\n' "$C_DIM" "$env_key" "$C_RESET"
+  fi
+}
+
+_cs_cmd_key() {
+  local name="${1:-}" env_key secret
+  [[ -n "$name" ]] || die "用法: codex-switch key <name>"
+  _cs_store init
+  _cs_store exists "$name" || die "未知供应商: $name"
+  _cs_store is_official "$name" && die "$name 使用 Codex 内置认证，不由 codex-switch 管理 Key"
+  env_key=$(_cs_store get "$name" env_key)
+  [[ -n "$env_key" ]] || die "供应商 $name 未配置 env_key"
+
+  read -rsp "$env_key = " secret
+  printf '\n'
+  [[ -n "$secret" ]] || { info "Key 为空，已取消"; return 0; }
+  _cs_save_key "$env_key" "$secret"
+  ok "已更新 $name 的 Key (${CS_KEYS}，权限 600)"
+  info "无需重启 Codex；新建任务后生效"
 }
 
 _cs_cmd_rm() {
@@ -862,6 +912,7 @@ ${C_BOLD}用法:${C_RESET}
   codex-switch status       当前状态 + key 检查
   codex-switch test [name]  冒烟测试连通性 + 延迟
   codex-switch add          交互式添加供应商（可选写入 keys.env）
+  codex-switch key <name>   更新供应商的 API Key
   codex-switch rm <name>    删除供应商（-y 跳过确认）
   codex-switch edit         用 \$EDITOR 编辑 providers.json
   codex-switch doctor       配置健康检查
@@ -889,11 +940,13 @@ main() {
     status|st) _cs_cmd_status ;;
     test) shift; _cs_cmd_test "$@" ;;
     add) _cs_cmd_add ;;
+    key|set-key) shift; _cs_cmd_key "$@" ;;
     rm|remove|del) shift; _cs_cmd_rm "$@" ;;
     edit) _cs_cmd_edit ;;
     doctor) _cs_cmd_doctor ;;
     install) _cs_cmd_install ;;
     update|upgrade) _cs_cmd_update ;;
+    _auth-token) shift; _cs_cmd_auth_token "$@" ;;
     uninstall) shift; _cs_cmd_uninstall "$@" ;;
     current) _cs_store current ;;
     version|--version|-V) echo "codex-switch $VERSION" ;;
