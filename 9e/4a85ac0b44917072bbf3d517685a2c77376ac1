@@ -1,0 +1,22 @@
+README.md
+  s_f8ee179dcd7fe6::t_3a88f92f04ed7f 11-13,49,53,56,65,79,97,108-109,113,121-123
+codex-switch.sh
+  s_f8ee179dcd7fe6::t_a0a07b9d05961f 4,125-126,159,183-184,186-196,268-303,348,358-362,381,463-465,492,504,509,541,572,574-575,577-581,583,585-599,915,943,949
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "9e4a85ac0b44917072bbf3d517685a2c77376ac1",
+  "prompts": {},
+  "logical_commit_id": "9e4a85ac0b44917072bbf3d517685a2c77376ac1",
+  "sessions": {
+    "s_f8ee179dcd7fe6": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fd5f1-c582-78c3-b38f-474d1588bbb9",
+        "model": "unknown"
+      },
+      "human_author": "Xiang Li <lee98alex@gmail.com>"
+    }
+  }
+}
