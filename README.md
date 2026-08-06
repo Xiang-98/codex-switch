@@ -1,6 +1,17 @@
+<div align="center">
+
 # codex-switch
 
 单文件 bash CLI，在多个 Codex CLI 模型供应商之间快速切换，风格类似 git 子命令。
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![bash 3.2+](https://img.shields.io/badge/bash-3.2%2B-green)
+![Codex 0.118+](https://img.shields.io/badge/Codex-0.118%2B-blue)
+![platform macOS](https://img.shields.io/badge/platform-macOS-lightgrey)
+
+[特性](#特性) · [安装](#安装) · [快速开始](#快速开始) · [供应商清单](#支持-responses-api-的供应商) · [命令](#命令) · [环境变量](#环境变量)
+
+</div>
 
 ## 特性
 
@@ -12,7 +23,7 @@
 - **桌面端免重启切换**：`use` 后新建 Codex 任务即可生效，无需退出应用
 - 内置冒烟测试：`curl` 一次 `/responses` 端点，显示 HTTP 状态和延迟
 - 轻量依赖：Codex 0.118.0+、bash 3.2+、python3、curl；`fzf` 可选
-- 附赠命令：`edit`（$EDITOR 编辑清单）、`doctor`（健康检查）、`install`（自动配置 PATH 和别名）、`update` / `upgrade`（安全更新）
+- 附赠命令：`edit`（`$EDITOR` 编辑清单）、`doctor`（健康检查）、`install`（自动配置 PATH 和别名）、`update` / `upgrade`（安全更新）
 
 ## 运行要求
 
@@ -78,6 +89,36 @@ $ codex-switch ls
 * go      gpt-5.6-luna  https://opencode.ai/zen/go/v1
   openai  官方默认
 ```
+
+## 支持 Responses API 的供应商
+
+当前 Codex 仅支持 `wire_api = "responses"`（见[数据存储](#数据存储)），供应商必须提供 OpenAI Responses 格式的 `/responses` 端点。
+
+### 原生支持（可直接接入）
+
+以下供应商已确认原生支持 Responses API，可直接 `codex-switch add` 接入（model 名称以各平台控制台为准）：
+
+| 供应商 | base_url | 说明 |
+| --- | --- | --- |
+| OpenAI 官方 | 内置 `openai`，无需添加 | Codex 默认供应商 |
+| [Azure OpenAI](https://learn.microsoft.com/azure/ai-foundry/openai/overview) | `https://{resource}.openai.azure.com/openai/v1` | 需替换 `{resource}` 为你的资源名 |
+| [阿里云百炼](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-responses) | `https://dashscope.aliyuncs.com/compatible-mode/v1` | Qwen 系列；推荐迁移到带业务空间 ID 的新域名 |
+| [火山方舟（豆包）](https://www.volcengine.com/docs/82379/1585128) | `https://ark.cn-beijing.volces.com/api/v3` | Doubao 系列，个别老模型不支持 |
+| [百度千帆](https://cloud.baidu.com/doc/qianfan/s/Smovaaszj) | `https://qianfan.baidubce.com/v2` | ERNIE 系列，也托管 DeepSeek 等第三方模型 |
+| [MiniMax](https://platform.minimaxi.com/docs/token-plan/codex) | `https://api.minimaxi.com/v1` | MiniMax-M 系列；官方提供 Codex 接入文档 |
+| [xAI](https://docs.x.ai/) | `https://api.x.ai/v1` | Grok 系列，含 Live Search 等内置工具 |
+| [OpenRouter](https://openrouter.ai/docs/api/reference/responses/overview) | `https://openrouter.ai/api/v1` | 300+ 模型聚合；Responses 为 Beta 且无状态（拒绝 `store: true` / `previous_response_id`） |
+| [七牛云](https://news.qiniu.com/archives/1784274369892) | `https://api.qnaigc.com/bypass/openai/v1` | Codex 专用 Responses 端点，聚合多家模型 |
+| [opencode zen](https://opencode.ai/) | `https://opencode.ai/zen/go/v1` | 见上方快速开始示例 |
+
+### 仅 Chat Completions（需中转或网关）
+
+DeepSeek 官方、Kimi（月之暗面）、智谱 GLM、腾讯混元、硅基流动、阶跃星辰，以及 Groq / Together / Fireworks / Gemini OpenAI 兼容端点等平台**只有** `/chat/completions` 接口，不提供 `/responses` 端点，直连会 404。想用这些模型可以：
+
+- 经上表中的**平台方**中转——例如百度千帆、七牛云上托管了 DeepSeek / Kimi 等模型，走平台的 Responses 端点即可（deepseek-v4-flash 这类模型通常就是这么接入的）；
+- 自建协议转换网关，把 `/responses` 转成 `/chat/completions`，如 [LiteLLM](https://github.com/BerriAI/litellm)、[new-api](https://github.com/QuantumNous/new-api)、[codex-openai-proxy](https://github.com/scorpioash/codex-openai-proxy)、[GodeX](https://www.oschina.net/news/450110)。
+
+> 提示：接入后一律用 `codex-switch test` 验证——HTTP 200 即可用；404 通常意味着该端点不支持 Responses API。
 
 ## 命令
 
