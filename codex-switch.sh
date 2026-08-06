@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.1.1"
+VERSION="1.2.0"
 CS_HOME="${CODEX_SWITCH_HOME:-$HOME/.codex-switch}"
 CS_STORE="$CS_HOME/providers.json"
 CS_KEYS="$CS_HOME/keys.env"
@@ -614,6 +614,55 @@ _cs_rc_file() {
   esac
 }
 
+_cs_script_path() {
+  local src="${BASH_SOURCE[0]:-$0}" dir target hops=0
+  while [[ -L "$src" ]]; do
+    hops=$((hops + 1))
+    [[ "$hops" -le 20 ]] || return 1
+    dir=$(cd -P "$(dirname "$src")" && pwd) || return 1
+    target=$(readlink "$src") || return 1
+    if [[ "$target" == /* ]]; then
+      src="$target"
+    else
+      src="$dir/$target"
+    fi
+  done
+  dir=$(cd -P "$(dirname "$src")" && pwd) || return 1
+  printf '%s/%s\n' "$dir" "$(basename "$src")"
+}
+
+_cs_cmd_update() {
+  command -v git >/dev/null 2>&1 || die "更新需要 git"
+
+  local script repo branch upstream before after new_version
+  script=$(_cs_script_path) || die "无法解析当前脚本路径"
+  repo=$(git -C "$(dirname "$script")" rev-parse --show-toplevel 2>/dev/null) || \
+    die "当前安装不在 Git 仓库中，请从 GitHub 重新 clone 后安装"
+
+  if [[ -n "$(git -C "$repo" status --porcelain --untracked-files=no)" ]]; then
+    die "仓库存在未提交的修改，请先提交或用 git stash 临时保存后再更新: $repo"
+  fi
+  branch=$(git -C "$repo" symbolic-ref --quiet --short HEAD 2>/dev/null) || \
+    die "当前处于 detached HEAD，无法自动更新"
+  upstream=$(git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null) || \
+    die "分支 $branch 没有上游分支，无法自动更新"
+  before=$(git -C "$repo" rev-parse --short HEAD)
+
+  info "正在从 $upstream 检查更新..."
+  if ! git -C "$repo" pull --ff-only; then
+    err "无法快进更新；请检查网络、远端配置或本地分支状态"
+    return 1
+  fi
+
+  after=$(git -C "$repo" rev-parse --short HEAD)
+  new_version=$(awk -F'"' '$1 == "VERSION=" { print $2; exit }' "$script")
+  if [[ "$before" == "$after" ]]; then
+    ok "已是最新版本${new_version:+ (v$new_version)}"
+  else
+    ok "更新完成: $before -> $after${new_version:+ (v$new_version)}"
+  fi
+}
+
 _cs_cmd_install() {
   local self bin_dir target rc changed=0
   self="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/$(basename "${BASH_SOURCE[0]:-$0}")"
@@ -817,6 +866,7 @@ ${C_BOLD}用法:${C_RESET}
   codex-switch edit         用 \$EDITOR 编辑 providers.json
   codex-switch doctor       配置健康检查
   codex-switch install      链接到 ~/bin 并配置 PATH + alias cs
+  codex-switch update       从上游安全更新（upgrade 同义）
   codex-switch uninstall    卸载（--purge 同时删除数据目录）
   codex-switch version      显示版本
   codex-switch help         显示本帮助
@@ -843,6 +893,7 @@ main() {
     edit) _cs_cmd_edit ;;
     doctor) _cs_cmd_doctor ;;
     install) _cs_cmd_install ;;
+    update|upgrade) _cs_cmd_update ;;
     uninstall) shift; _cs_cmd_uninstall "$@" ;;
     current) _cs_store current ;;
     version|--version|-V) echo "codex-switch $VERSION" ;;

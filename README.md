@@ -11,7 +11,7 @@
 - **API key 安全**：不写入 `providers.json` 或 Codex 配置，`use`/`status` 只检查环境变量是否 export；仅在你显式同意时才写入可选 `~/.codex-switch/keys.env`（权限 600）自动 source
 - 内置冒烟测试：`curl` 一次 `/responses`（或 `/chat/completions`）端点，显示 HTTP 状态和延迟
 - 零依赖：bash 3.2+ + 系统自带 python3 + curl；`fzf` 可选
-- 附赠命令：`edit`（$EDITOR 编辑清单）、`doctor`（健康检查）、`install`（自动配置 PATH 和别名）
+- 附赠命令：`edit`（$EDITOR 编辑清单）、`doctor`（健康检查）、`install`（自动配置 PATH 和别名）、`update` / `upgrade`（安全更新）
 
 ## 安装
 
@@ -21,7 +21,14 @@ git clone https://github.com/Xiang-98/codex-switch.git ~/Documents/codex-switch 
 source ~/.zshrc
 ```
 
-`install` 创建的是符号链接，之后 `git pull` 更新即生效，无需重新安装。
+`install` 创建的是符号链接，之后运行以下任一命令即可更新，无需重新安装：
+
+```bash
+codex-switch update
+codex-switch upgrade  # update 的同义命令
+```
+
+更新仅允许 Git 快进合并；仓库存在未提交修改或分支发生分叉时会停止，不会覆盖本地改动。
 
 ## 卸载
 
@@ -73,6 +80,7 @@ $ codex-switch ls
 | `codex-switch edit` | 用 `$EDITOR` 编辑 providers.json，保存后校验 JSON |
 | `codex-switch doctor` | 健康检查（python3 / tomllib / curl / fzf / 配置语法 / key） |
 | `codex-switch install` | 符号链接到 `~/bin` + 幂等配置 PATH 和 `alias cs` |
+| `codex-switch update` / `upgrade` | 从当前分支的上游执行仅快进更新，保留本地改动 |
 | `codex-switch uninstall [--purge]` | 卸载：删链接、清理 rc 配置；`--purge` 追加删除数据目录 |
 
 ## 数据存储
