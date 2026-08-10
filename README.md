@@ -178,6 +178,16 @@ model_catalog_json = "~/.codex/model-catalogs/custom-catalog.json"
 
 > 注意：0.146 起 catalog 条目有一批**必填字段**（`shell_type`、`visibility`、`priority`、`truncation_policy`、`base_instructions` 等），缺一个就会加载失败并报 `missing field xxx`。上面是照 CLI 内置条目逐字段对齐、在 0.146 实测可加载的完整模板，直接改 `slug` / 档位 / `context_window` 即可复用。
 
+> 更关键的一点：`model_catalog_json` 是**整体替换**而非增量合并——只写自定义条目的话官方模型会全部消失，`codex-switch use openai` 切回默认后 Codex 会因找不到默认模型而报错。正确做法是把自定义条目**合并进内置 catalog**：
+>
+> ```bash
+> # 用不含 model_catalog_json 的临时 CODEX_HOME 导出内置 catalog
+> CODEX_HOME=$(mktemp -d) codex debug models > /tmp/builtin-catalog.json
+> # 再把自定义条目追加到其 models 数组，整体写入 model_catalog_json 指向的文件
+> ```
+>
+> 随时可用 `codex debug models` 查看当前生效的模型列表，确认合并结果。
+
 未配置 catalog 时，退回 `config.toml` 顶层的 `model_reasoning_effort` 全局设置。
 
 ### CLI 的 /model 不显示自定义模型或档位
@@ -190,6 +200,8 @@ model_catalog_json = "~/.codex/model-catalogs/custom-catalog.json"
 4. 改完先跑 `codex mcp list` 本地校验：配置能正常加载即合格，否则会精确报出缺哪个字段
 5. **重启 CLI**——config 和 catalog 都只在启动时读取，热改不生效
 6. 兜底：不依赖菜单，直接在 config.toml 顶层写 `model_reasoning_effort = "high"`，每次请求都会带上该档位
+
+另外，如果**切回官方默认后** Codex 启动报错或桌面端异常，也是同一个文件的坑：`model_catalog_json` 是整体替换而非合并，官方模型全部消失导致默认模型无法解析；按上方说明把自定义条目合并进内置 catalog 即可。
 
 `reasoning.effort` 发出去后是否生效由供应商决定：
 
