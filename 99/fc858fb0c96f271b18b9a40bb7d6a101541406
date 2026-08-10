@@ -1,0 +1,19 @@
+README.md
+  h_a94cddde0442f7 27,199-200
+codex-switch.sh
+  h_a94cddde0442f7 459-471
+sync-model-catalog.sh
+  h_a94cddde0442f7 152,157,189-216
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "99fc858fb0c96f271b18b9a40bb7d6a101541406",
+  "prompts": {},
+  "logical_commit_id": "99fc858fb0c96f271b18b9a40bb7d6a101541406",
+  "humans": {
+    "h_a94cddde0442f7": {
+      "author": "Xiang Li <lee98alex@gmail.com>"
+    }
+  }
+}
