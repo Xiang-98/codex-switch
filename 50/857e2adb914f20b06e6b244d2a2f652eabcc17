@@ -1,0 +1,17 @@
+README.md
+  h_a94cddde0442f7 26,63,192-194,197,269
+codex-switch.sh
+  h_a94cddde0442f7 896-905,990-1027,1047,1075
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "50857e2adb914f20b06e6b244d2a2f652eabcc17",
+  "prompts": {},
+  "logical_commit_id": "50857e2adb914f20b06e6b244d2a2f652eabcc17",
+  "humans": {
+    "h_a94cddde0442f7": {
+      "author": "Xiang Li <lee98alex@gmail.com>"
+    }
+  }
+}
