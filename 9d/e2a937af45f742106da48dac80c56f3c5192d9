@@ -1,0 +1,17 @@
+README.md
+  h_a94cddde0442f7 26,182,185-186,189
+sync-model-catalog.sh
+  h_a94cddde0442f7 1-111
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "9de2a937af45f742106da48dac80c56f3c5192d9",
+  "prompts": {},
+  "logical_commit_id": "9de2a937af45f742106da48dac80c56f3c5192d9",
+  "humans": {
+    "h_a94cddde0442f7": {
+      "author": "Xiang Li <lee98alex@gmail.com>"
+    }
+  }
+}
