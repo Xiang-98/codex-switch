@@ -24,6 +24,7 @@
 - 内置冒烟测试：`curl` 一次 `/responses` 端点，显示 HTTP 状态和延迟
 - 附赠 `probe-reasoning.sh`：逐档探测供应商是否支持 `reasoning.effort`（思考深度/档位）
 - `codex-switch monitor`：launchd 事件驱动监听（无定时器），官方模型更新或 codex 升级时自动重建 model catalog；底层 `sync-model-catalog.sh` 也可独立使用
+- 配置了 model catalog 时，`use` 切换自动刷新 picker 可见性：只展示当前供应商可用的模型
 - 轻量依赖：Codex 0.118.0+、bash 3.2+、python3、curl；`fzf` 可选
 - 附赠命令：`edit`（`$EDITOR` 编辑清单）、`doctor`（健康检查）、`install`（自动配置 PATH 和别名）、`update` / `upgrade`（安全更新）
 
@@ -195,6 +196,8 @@ model_catalog_json = "~/.codex/model-catalogs/custom-catalog.json"
 > ```
 >
 > 底层是同目录的 `sync-model-catalog.sh`（也可独立用 `--install` / `--uninstall`）。内容无变化时会跳过写入（幂等，事件空触发零成本），日志在 `~/.codex-switch/sync.log`。随时可用 `codex debug models` 查看当前生效的模型列表。
+>
+> 同步还会按**当前供应商**自动设置选择器可见性：官方默认下隐藏自定义模型；自定义供应商下只显示该供应商的 model。picker 里看到的都是当前真正能用的组合——`visibility: hide` 只是不展示，模型仍可被内部功能（如 auto-review）正常解析。`codex-switch use` 切换后会自动触发一次同步。
 
 未配置 catalog 时，退回 `config.toml` 顶层的 `model_reasoning_effort` 全局设置。
 

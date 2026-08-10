@@ -149,11 +149,12 @@ else
 fi
 
 sync_rc=0
-sync_out=$(python3 - "$base" "$EXTRA" "$OUT" <<'PY'
+sync_out=$(python3 - "$base" "$EXTRA" "$OUT" "$CS_HOME" <<'PY'
 import json, os, sys
 from datetime import datetime, timezone
 
 base_path, extra_path, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
+cs_home = sys.argv[4] if len(sys.argv) > 4 else ""
 
 base = json.load(open(base_path))
 extra = json.load(open(extra_path))
@@ -185,6 +186,34 @@ for m in extra.get("models", []):
     custom_slugs.append(m["slug"])
 
 result = {"models": list(merged.values())}
+
+# 可见性策略：picker 只展示当前供应商可用的模型。
+# - 官方默认：自定义条目隐藏，官方条目保持数据源原始可见性
+# - 自定义供应商：只显示该供应商的 model，其余全部隐藏
+# visibility=hide 只是不在选择器展示，模型仍可被内部功能解析使用。
+custom_set = set(custom_slugs)
+current, current_official, current_model = "", True, ""
+try:
+    store = json.load(open(os.path.join(cs_home, "providers.json")))
+    current = store.get("current") or ""
+    p = (store.get("providers") or {}).get(current) or {}
+    current_official = bool(p.get("official")) or not current
+    current_model = p.get("model") or ""
+except Exception:
+    pass
+
+if current_official:
+    for m in result["models"]:
+        if m["slug"] in custom_set:
+            m["visibility"] = "hide"
+else:
+    slugs = {m["slug"] for m in result["models"]}
+    if current_model and current_model not in slugs:
+        print("WARN: 当前模型 %s 不在 catalog 中，跳过可见性调整" % current_model, file=sys.stderr)
+    else:
+        for m in result["models"]:
+            m["visibility"] = "list" if m["slug"] == current_model else "hide"
+
 if os.path.exists(out_path):
     try:
         if json.load(open(out_path)) == result:

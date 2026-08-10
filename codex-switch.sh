@@ -456,6 +456,19 @@ _cs_cmd_use() {
     _cs_key_report "$env_key" || true
   fi
   info "Codex 桌面端无需重启；新建任务后生效"
+
+  # 配置了 model catalog 时，按新供应商刷新 picker 可见性（只显示可用模型）
+  if [[ -f "$CS_HOME/catalog-extra.json" ]]; then
+    local self sync
+    self=$(_cs_script_path) && sync="$(dirname "$self")/sync-model-catalog.sh"
+    if [[ -n "${sync:-}" && -x "$sync" ]]; then
+      if "$sync" >/dev/null 2>&1; then
+        info "已按当前供应商刷新模型可见性"
+      else
+        warn "模型可见性刷新失败，可手动运行 sync-model-catalog.sh 排查"
+      fi
+    fi
+  fi
 }
 
 _cs_cmd_status() {
