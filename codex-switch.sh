@@ -459,14 +459,18 @@ _cs_cmd_use() {
 
   # 配置了 model catalog 时，按新供应商刷新 picker 可见性（只显示可用模型）
   if [[ -f "$CS_HOME/catalog-extra.json" ]]; then
-    local self sync
+    local self sync sync_rc=0
     self=$(_cs_script_path) && sync="$(dirname "$self")/sync-model-catalog.sh"
     if [[ -n "${sync:-}" && -x "$sync" ]]; then
-      if "$sync" >/dev/null 2>&1; then
-        info "已按当前供应商刷新模型可见性"
-      else
-        warn "模型可见性刷新失败，可手动运行 sync-model-catalog.sh 排查"
-      fi
+      "$sync" >/dev/null 2>&1 || sync_rc=$?
+      case "$sync_rc" in
+        0)
+          info "已按当前供应商刷新模型可见性"
+          info "picker 列表在进程启动时加载：CLI 重进、桌面端重启 App 后更新显示（功能切换已即时生效）"
+          ;;
+        10) ;;
+        *) warn "模型可见性刷新失败，可手动运行 sync-model-catalog.sh 排查" ;;
+      esac
     fi
   fi
 }

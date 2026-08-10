@@ -20,7 +20,7 @@
 - **安全改写 `~/.codex/config.toml`**：只修改顶层 `model`、`model_provider` 和对应 `[model_providers.<name>]` 段，其余段（`[plugins.*]`、`[desktop]` 等）原样保留
 - 写入前自动备份 `config.toml.bak`，临时文件 + `mv` 原子写入
 - **API key 安全**：不写入 `providers.json` 或 Codex 配置；仅在你显式同意时写入 `~/.codex-switch/keys.env`（权限 600），Codex 通过本地凭据命令按需读取
-- **桌面端免重启切换**：`use` 后新建 Codex 任务即可生效，无需退出应用
+- **桌面端免重启切换**：`use` 后新建 Codex 任务即可生效，无需退出应用（picker 的模型列表在 App 启动时加载，可见性显示刷新需重启 App）
 - 内置冒烟测试：`curl` 一次 `/responses` 端点，显示 HTTP 状态和延迟
 - 附赠 `probe-reasoning.sh`：逐档探测供应商是否支持 `reasoning.effort`（思考深度/档位）
 - `codex-switch monitor`：launchd 事件驱动监听（无定时器），官方模型更新或 codex 升级时自动重建 model catalog；底层 `sync-model-catalog.sh` 也可独立使用
@@ -197,7 +197,7 @@ model_catalog_json = "~/.codex/model-catalogs/custom-catalog.json"
 >
 > 底层是同目录的 `sync-model-catalog.sh`（也可独立用 `--install` / `--uninstall`）。内容无变化时会跳过写入（幂等，事件空触发零成本），日志在 `~/.codex-switch/sync.log`。随时可用 `codex debug models` 查看当前生效的模型列表。
 >
-> 同步还会按**当前供应商**自动设置选择器可见性：官方默认下隐藏自定义模型；自定义供应商下只显示该供应商的 model。picker 里看到的都是当前真正能用的组合——`visibility: hide` 只是不展示，模型仍可被内部功能（如 auto-review）正常解析。`codex-switch use` 切换后会自动触发一次同步。
+> 同步还会按**当前供应商**自动设置选择器可见性：官方默认下隐藏自定义模型；自定义供应商下只显示该供应商的 model。picker 里看到的都是当前真正能用的组合——`visibility: hide` 只是不展示，模型仍可被内部功能（如 auto-review）正常解析。`codex-switch use` 切换后会自动触发一次同步。注意 picker 的模型列表在进程启动时加载：CLI 重进、桌面端重启 App 后才显示新集合；供应商切换本身（请求路由与认证）即时生效，不受影响。
 
 未配置 catalog 时，退回 `config.toml` 顶层的 `model_reasoning_effort` 全局设置。
 
