@@ -23,7 +23,7 @@
 - **桌面端免重启切换**：`use` 后新建 Codex 任务即可生效，无需退出应用
 - 内置冒烟测试：`curl` 一次 `/responses` 端点，显示 HTTP 状态和延迟
 - 附赠 `probe-reasoning.sh`：逐档探测供应商是否支持 `reasoning.effort`（思考深度/档位）
-- 附赠 `sync-model-catalog.sh`：用最新官方模型列表 + 自定义条目重建 model catalog；`--install` 可装 launchd 监听（无定时器，纯事件驱动），模型列表更新或 codex 升级时自动重同步
+- `codex-switch monitor`：launchd 事件驱动监听（无定时器），官方模型更新或 codex 升级时自动重建 model catalog；底层 `sync-model-catalog.sh` 也可独立使用
 - 轻量依赖：Codex 0.118.0+、bash 3.2+、python3、curl；`fzf` 可选
 - 附赠命令：`edit`（`$EDITOR` 编辑清单）、`doctor`（健康检查）、`install`（自动配置 PATH 和别名）、`update` / `upgrade`（安全更新）
 
@@ -60,7 +60,7 @@ codex-switch upgrade  # update 的同义命令
 ## 卸载
 
 ```bash
-codex-switch uninstall           # 切回官方默认 + 删除 ~/bin 链接 + 清理 rc 配置（自动备份 rc）
+codex-switch uninstall           # 切回官方默认 + 删除 ~/bin 链接 + 清理 rc 配置 + 移除模型同步监听（自动备份 rc）
 codex-switch uninstall --purge   # 额外删除数据目录 ~/.codex-switch
 ```
 
@@ -189,11 +189,12 @@ model_catalog_json = "~/.codex/model-catalogs/custom-catalog.json"
 > 官方模型有变化（新模型上线、codex 升级）后重跑一次即可。不想手动跟进的话，装一次 launchd 监听（**无定时器，纯事件驱动**）：
 >
 > ```bash
-> ./sync-model-catalog.sh --install    # 监听 models_cache.json 更新和 codex 安装路径，变化时自动同步
-> ./sync-model-catalog.sh --uninstall  # 移除监听
+> codex-switch monitor           # 安装监听：models_cache.json 更新或 codex 升级时自动同步
+> codex-switch monitor off       # 移除监听
+> codex-switch monitor status    # 查看监听状态
 > ```
 >
-> 内容无变化时会跳过写入（幂等，事件空触发零成本），日志在 `~/.codex-switch/sync.log`。随时可用 `codex debug models` 查看当前生效的模型列表。
+> 底层是同目录的 `sync-model-catalog.sh`（也可独立用 `--install` / `--uninstall`）。内容无变化时会跳过写入（幂等，事件空触发零成本），日志在 `~/.codex-switch/sync.log`。随时可用 `codex debug models` 查看当前生效的模型列表。
 
 未配置 catalog 时，退回 `config.toml` 顶层的 `model_reasoning_effort` 全局设置。
 
@@ -265,6 +266,7 @@ model_catalog_json = "~/.codex/model-catalogs/custom-catalog.json"
 | `codex-switch doctor` | 健康检查（python3 / tomllib / curl / fzf / 配置语法 / key） |
 | `codex-switch install` | 符号链接到 `~/bin` + 幂等配置 PATH 和 `alias cs` |
 | `codex-switch update` / `upgrade` | 从当前分支的上游执行仅快进更新，保留本地改动 |
+| `codex-switch monitor [on\|off\|status]` | 模型列表自动同步监听：安装 / 移除 / 查看（launchd 事件驱动，无定时器） |
 | `codex-switch uninstall [--purge]` | 卸载：删链接、清理 rc 配置；`--purge` 追加删除数据目录 |
 
 ## 数据存储

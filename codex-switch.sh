@@ -893,6 +893,16 @@ _cs_cmd_uninstall() {
     ok "已从 $rc 移除 PATH / alias（备份: $rc.codex-switch.bak）"
   fi
 
+  local mon_label mon_plist
+  mon_label=$(_cs_monitor_label)
+  mon_plist="$HOME/Library/LaunchAgents/${mon_label}.plist"
+  if [[ -f "$mon_plist" ]]; then
+    launchctl bootout "gui/$(id -u)/${mon_label}" 2>/dev/null || true
+    launchctl unload "$mon_plist" 2>/dev/null || true
+    rm -f "$mon_plist"
+    ok "已移除模型同步监听: ${mon_label}"
+  fi
+
   if [[ -d "$CS_HOME" ]]; then
     if [[ "$purge" == 1 ]]; then
       rm -rf "$CS_HOME"
@@ -979,6 +989,44 @@ PY
   return "$fail"
 }
 
+_cs_monitor_label() { printf '%s\n' "com.codex-switch.catalog-sync"; }
+
+_cs_cmd_monitor() {
+  local action="${1:-on}" self sync plist label
+  label=$(_cs_monitor_label)
+  plist="$HOME/Library/LaunchAgents/${label}.plist"
+
+  if [[ "$action" == "status" ]]; then
+    if launchctl print "gui/$(id -u)/${label}" >/dev/null 2>&1; then
+      ok "模型同步监听: 运行中（${plist}）"
+    elif [[ -f "$plist" ]]; then
+      warn "模型同步监听: plist 存在但未加载，用 codex-switch monitor 重新安装"
+    else
+      info "模型同步监听: 未安装（codex-switch monitor 安装）"
+    fi
+    return 0
+  fi
+
+  self=$(_cs_script_path) || die "无法解析脚本路径"
+  sync="$(dirname "$self")/sync-model-catalog.sh"
+  [[ -x "$sync" ]] || die "未找到 ${sync}（sync-model-catalog.sh 应与 codex-switch.sh 同目录）"
+
+  case "$action" in
+    on|install|enable)
+      if [[ ! -f "$CS_HOME/catalog-extra.json" ]]; then
+        warn "未找到 ${CS_HOME}/catalog-extra.json；请先按 README 配置 model catalog 自定义条目，否则同步会失败"
+      fi
+      "$sync" --install
+      ;;
+    off|uninstall|disable)
+      "$sync" --uninstall
+      ;;
+    *)
+      die "用法: codex-switch monitor [on|off|status]"
+      ;;
+  esac
+}
+
 _cs_usage() {
   cat <<EOF
 ${C_BOLD}codex-switch${C_RESET} — Codex CLI 模型供应商切换工具 (v$VERSION)
@@ -996,6 +1044,7 @@ ${C_BOLD}用法:${C_RESET}
   codex-switch doctor       配置健康检查
   codex-switch install      链接到 ~/bin 并配置 PATH + alias cs
   codex-switch update       从上游安全更新（upgrade 同义）
+  codex-switch monitor [on|off|status]  模型列表自动同步监听（launchd 事件驱动，无定时器）
   codex-switch uninstall    卸载（--purge 同时删除数据目录）
   codex-switch version      显示版本
   codex-switch help         显示本帮助
@@ -1023,6 +1072,7 @@ main() {
     rm|remove|del) shift; _cs_cmd_rm "$@" ;;
     edit) _cs_cmd_edit ;;
     doctor) _cs_cmd_doctor ;;
+    monitor) shift; _cs_cmd_monitor "$@" ;;
     install) _cs_cmd_install ;;
     update|upgrade) _cs_cmd_update ;;
     _auth-token) shift; _cs_cmd_auth_token "$@" ;;
