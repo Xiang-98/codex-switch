@@ -466,7 +466,20 @@ _cs_cmd_use() {
       case "$sync_rc" in
         0)
           info "已按当前供应商刷新模型可见性"
-          info "picker 列表在进程启动时加载：CLI 重进、桌面端重启 App 后更新显示（功能切换已即时生效）"
+          if [[ -t 0 && -d "/Applications/ChatGPT.app" ]] && pgrep -x ChatGPT >/dev/null 2>&1; then
+            local restart_ans i
+            read -rp "重启桌面端 App 以刷新模型列表?（会打断进行中的任务）[y/N] " restart_ans
+            if [[ "$restart_ans" =~ ^[Yy]$ ]]; then
+              killall ChatGPT 2>/dev/null || true
+              i=0
+              while pgrep -x ChatGPT >/dev/null 2>&1 && ((i < 50)); do sleep 0.1; i=$((i + 1)); done
+              open -a ChatGPT && ok "桌面端已重启，picker 将显示新的模型列表"
+            else
+              info "picker 显示将在下次重启 App 后刷新（功能切换已即时生效）"
+            fi
+          else
+            info "picker 列表在进程启动时加载：CLI 重进、桌面端重启 App 后更新显示（功能切换已即时生效）"
+          fi
           ;;
         10) ;;
         *) warn "模型可见性刷新失败，可手动运行 sync-model-catalog.sh 排查" ;;
