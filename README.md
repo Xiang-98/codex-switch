@@ -23,6 +23,7 @@
 - **桌面端免重启切换**：`use` 后新建 Codex 任务即可生效，无需退出应用
 - 内置冒烟测试：`curl` 一次 `/responses` 端点，显示 HTTP 状态和延迟
 - 附赠 `probe-reasoning.sh`：逐档探测供应商是否支持 `reasoning.effort`（思考深度/档位）
+- 附赠 `sync-model-catalog.sh`：用最新官方模型列表 + 自定义条目重建 model catalog，可定期跟进官方模型变化
 - 轻量依赖：Codex 0.118.0+、bash 3.2+、python3、curl；`fzf` 可选
 - 附赠命令：`edit`（`$EDITOR` 编辑清单）、`doctor`（健康检查）、`install`（自动配置 PATH 和别名）、`update` / `upgrade`（安全更新）
 
@@ -178,15 +179,14 @@ model_catalog_json = "~/.codex/model-catalogs/custom-catalog.json"
 
 > 注意：0.146 起 catalog 条目有一批**必填字段**（`shell_type`、`visibility`、`priority`、`truncation_policy`、`base_instructions` 等），缺一个就会加载失败并报 `missing field xxx`。上面是照 CLI 内置条目逐字段对齐、在 0.146 实测可加载的完整模板，直接改 `slug` / 档位 / `context_window` 即可复用。
 
-> 更关键的一点：`model_catalog_json` 是**整体替换**而非增量合并——只写自定义条目的话官方模型会全部消失，`codex-switch use openai` 切回默认后 Codex 会因找不到默认模型而报错。正确做法是把自定义条目**合并进内置 catalog**：
+> 更关键的一点：`model_catalog_json` 是**整体替换**而非增量合并——只写自定义条目的话官方模型会全部消失，`codex-switch use openai` 切回默认后 Codex 会因找不到默认模型而报错。而且官方模型列表会随在线下发变化（桌面端缓存于 `~/.codex/models_cache.json`），用二进制内置快照手工合并很快就会过时。用本仓库的 `sync-model-catalog.sh` 处理：
 >
 > ```bash
-> # 用不含 model_catalog_json 的临时 CODEX_HOME 导出内置 catalog
-> CODEX_HOME=$(mktemp -d) codex debug models > /tmp/builtin-catalog.json
-> # 再把自定义条目追加到其 models 数组，整体写入 model_catalog_json 指向的文件
+> # 自定义条目放在 ~/.codex-switch/catalog-extra.json（格式: {"models": [...]}）
+> ./sync-model-catalog.sh   # 优先取在线缓存，兜底导出内置快照；按 slug 合并后写回 ~/.codex/models.json
 > ```
 >
-> 随时可用 `codex debug models` 查看当前生效的模型列表，确认合并结果。
+> 官方模型有变化（新模型上线、codex 升级）后重跑一次即可，也可挂到 cron / launchd 定期执行。随时可用 `codex debug models` 查看当前生效的模型列表。
 
 未配置 catalog 时，退回 `config.toml` 顶层的 `model_reasoning_effort` 全局设置。
 
