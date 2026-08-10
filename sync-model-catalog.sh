@@ -7,7 +7,10 @@
 # 所以合并产物需要定期重建。
 #
 # 用法:
-#   ./sync-model-catalog.sh
+#   ./sync-model-catalog.sh              立即同步一次
+#   ./sync-model-catalog.sh --install    安装 launchd 监听（无定时器，纯事件驱动）：
+#                                        models_cache.json 更新或 codex 升级时自动同步
+#   ./sync-model-catalog.sh --uninstall  移除监听
 #
 # 数据源优先级：
 #   1. ~/.codex/models_cache.json（桌面端在线拉取的最新 catalog，首选）
@@ -39,6 +42,98 @@ warn() { printf '%s⚠%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
 info() { printf '%sℹ%s %s\n' "$C_CYAN" "$C_RESET" "$*"; }
 die()  { err "$*"; exit 1; }
 
+AGENT_LABEL="com.codex-switch.catalog-sync"
+
+_script_path() {
+  local src="${BASH_SOURCE[0]:-$0}" dir target hops=0
+  while [[ -L "$src" ]]; do
+    hops=$((hops + 1))
+    [[ "$hops" -le 20 ]] || return 1
+    dir=$(cd -P "$(dirname "$src")" && pwd) || return 1
+    target=$(readlink "$src") || return 1
+    if [[ "$target" == /* ]]; then src="$target"; else src="$dir/$target"; fi
+  done
+  dir=$(cd -P "$(dirname "$src")" && pwd) || return 1
+  printf '%s/%s\n' "$dir" "$(basename "$src")"
+}
+
+install_agent() {
+  local script installed plist uid caskroom app_bundle p
+  script=$(_script_path) || die "无法解析脚本路径"
+  plist="$HOME/Library/LaunchAgents/${AGENT_LABEL}.plist"
+  installed="$CS_HOME/sync-model-catalog.sh"
+  uid=$(id -u)
+  mkdir -p "$HOME/Library/LaunchAgents" "$CS_HOME"
+
+  # launchd 启动的进程没有 ~/Documents 的 TCC 权限，直接指向仓库路径会
+  # 报 Operation not permitted；把脚本复制到数据目录下再指向副本。
+  if [[ "$script" != "$installed" ]]; then
+    cp -p "$script" "$installed"
+    chmod +x "$installed"
+    info "已复制脚本到 ${installed}（仓库更新后重跑 --install 刷新副本）"
+  fi
+  script="$installed"
+
+  local watch=()
+  if [[ -e "$CACHE" ]]; then
+    watch+=("$CACHE")
+  else
+    warn "监听路径当前不存在（之后出现即生效；也可重新 --install）: ${CACHE}"
+    watch+=("$CACHE")
+  fi
+  caskroom=""
+  if command -v brew >/dev/null 2>&1; then caskroom="$(brew --prefix)/Caskroom/codex"; fi
+  [[ -n "$caskroom" && -d "$caskroom" ]] && watch+=("$caskroom")
+  app_bundle="/Applications/ChatGPT.app"
+  [[ -d "$app_bundle" ]] && watch+=("$app_bundle")
+  ((${#watch[@]} > 0)) || die "没有可监听的路径"
+
+  {
+    printf '<?xml version="1.0" encoding="UTF-8"?>\n'
+    printf '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+    printf '<plist version="1.0">\n<dict>\n'
+    printf '  <key>Label</key>\n  <string>%s</string>\n' "$AGENT_LABEL"
+    printf '  <key>ProgramArguments</key>\n  <array>\n    <string>%s</string>\n  </array>\n' "$script"
+    printf '  <key>WatchPaths</key>\n  <array>\n'
+    for p in "${watch[@]}"; do printf '    <string>%s</string>\n' "$p"; done
+    printf '  </array>\n'
+    printf '  <key>RunAtLoad</key>\n  <true/>\n'
+    printf '  <key>StandardOutPath</key>\n  <string>%s</string>\n' "$CS_HOME/sync.log"
+    printf '  <key>StandardErrorPath</key>\n  <string>%s</string>\n' "$CS_HOME/sync.log"
+    printf '</dict>\n</plist>\n'
+  } > "$plist"
+
+  launchctl bootout "gui/${uid}/${AGENT_LABEL}" 2>/dev/null || true
+  if launchctl bootstrap "gui/${uid}" "$plist" 2>/dev/null || launchctl load -w "$plist"; then
+    ok "已安装监听: ${AGENT_LABEL}"
+    info "监听路径:"
+    printf '  %s\n' "${watch[@]}"
+    info "日志: ${CS_HOME}/sync.log（卸载: ${0} --uninstall）"
+  else
+    die "launchctl 注册失败: ${plist}"
+  fi
+}
+
+uninstall_agent() {
+  local plist="$HOME/Library/LaunchAgents/${AGENT_LABEL}.plist" uid
+  uid=$(id -u)
+  launchctl bootout "gui/${uid}/${AGENT_LABEL}" 2>/dev/null || true
+  if [[ -f "$plist" ]]; then
+    launchctl unload "$plist" 2>/dev/null || true
+    rm -f "$plist"
+    ok "已移除监听: ${AGENT_LABEL}"
+  else
+    info "监听未安装"
+  fi
+}
+
+case "${1:-}" in
+  --install)   install_agent; exit 0 ;;
+  --uninstall) uninstall_agent; exit 0 ;;
+  "")          ;;
+  *)           die "未知参数: ${1}（用法: sync-model-catalog.sh [--install|--uninstall]）" ;;
+esac
+
 [[ -f "$EXTRA" ]] || die "未找到自定义条目文件 ${EXTRA}（格式: {\"models\": [...]}）"
 
 base="" tmp_home=""
@@ -53,7 +148,8 @@ else
   CODEX_HOME="$tmp_home" "$CODEX_BIN" debug models > "$base" || die "codex debug models 执行失败"
 fi
 
-python3 - "$base" "$EXTRA" "$OUT" <<'PY'
+sync_rc=0
+sync_out=$(python3 - "$base" "$EXTRA" "$OUT" <<'PY'
 import json, os, sys
 from datetime import datetime, timezone
 
@@ -89,6 +185,13 @@ for m in extra.get("models", []):
     custom_slugs.append(m["slug"])
 
 result = {"models": list(merged.values())}
+if os.path.exists(out_path):
+    try:
+        if json.load(open(out_path)) == result:
+            print("无变化: %d 个官方/内置条目 + 自定义: %s" % (len(models), ", ".join(custom_slugs)))
+            sys.exit(10)
+    except Exception:
+        pass
 tmp_out = out_path + ".tmp"
 with open(tmp_out, "w", encoding="utf-8") as f:
     json.dump(result, f, ensure_ascii=False, indent=2)
@@ -96,8 +199,23 @@ with open(tmp_out, "w", encoding="utf-8") as f:
 os.replace(tmp_out, out_path)
 print("共 %d 个官方/内置条目 + 自定义: %s" % (len(models), ", ".join(custom_slugs)))
 PY
+) || sync_rc=$?
 
-ok "已写入 ${OUT}"
+printf '%s\n' "$sync_out"
+case "$sync_rc" in
+  0)
+    ok "已写入 ${OUT}"
+    ;;
+  10)
+    ok "模型列表无变化，跳过写入"
+    [[ -n "$tmp_home" ]] && rm -rf "$tmp_home"
+    exit 0
+    ;;
+  *)
+    [[ -n "$tmp_home" ]] && rm -rf "$tmp_home"
+    die "合并失败（退出码 ${sync_rc}）"
+    ;;
+esac
 [[ -n "$tmp_home" ]] && rm -rf "$tmp_home"
 
 if [[ -n "$CODEX_BIN" && -x "$CODEX_BIN" ]]; then
@@ -108,4 +226,4 @@ if [[ -n "$CODEX_BIN" && -x "$CODEX_BIN" ]]; then
     exit 1
   fi
 fi
-printf '  %s重启 Codex 后生效；定期重跑本脚本即可跟进官方模型变化%s\n' "$C_DIM" "$C_RESET"
+printf '  %s重启 Codex 后生效；运行 %s --install 可在模型更新或 codex 升级时自动同步%s\n' "$C_DIM" "$0" "$C_RESET"

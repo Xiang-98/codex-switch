@@ -23,7 +23,7 @@
 - **桌面端免重启切换**：`use` 后新建 Codex 任务即可生效，无需退出应用
 - 内置冒烟测试：`curl` 一次 `/responses` 端点，显示 HTTP 状态和延迟
 - 附赠 `probe-reasoning.sh`：逐档探测供应商是否支持 `reasoning.effort`（思考深度/档位）
-- 附赠 `sync-model-catalog.sh`：用最新官方模型列表 + 自定义条目重建 model catalog，可定期跟进官方模型变化
+- 附赠 `sync-model-catalog.sh`：用最新官方模型列表 + 自定义条目重建 model catalog；`--install` 可装 launchd 监听（无定时器，纯事件驱动），模型列表更新或 codex 升级时自动重同步
 - 轻量依赖：Codex 0.118.0+、bash 3.2+、python3、curl；`fzf` 可选
 - 附赠命令：`edit`（`$EDITOR` 编辑清单）、`doctor`（健康检查）、`install`（自动配置 PATH 和别名）、`update` / `upgrade`（安全更新）
 
@@ -186,7 +186,14 @@ model_catalog_json = "~/.codex/model-catalogs/custom-catalog.json"
 > ./sync-model-catalog.sh   # 优先取在线缓存，兜底导出内置快照；按 slug 合并后写回 ~/.codex/models.json
 > ```
 >
-> 官方模型有变化（新模型上线、codex 升级）后重跑一次即可，也可挂到 cron / launchd 定期执行。随时可用 `codex debug models` 查看当前生效的模型列表。
+> 官方模型有变化（新模型上线、codex 升级）后重跑一次即可。不想手动跟进的话，装一次 launchd 监听（**无定时器，纯事件驱动**）：
+>
+> ```bash
+> ./sync-model-catalog.sh --install    # 监听 models_cache.json 更新和 codex 安装路径，变化时自动同步
+> ./sync-model-catalog.sh --uninstall  # 移除监听
+> ```
+>
+> 内容无变化时会跳过写入（幂等，事件空触发零成本），日志在 `~/.codex-switch/sync.log`。随时可用 `codex debug models` 查看当前生效的模型列表。
 
 未配置 catalog 时，退回 `config.toml` 顶层的 `model_reasoning_effort` 全局设置。
 
