@@ -56,7 +56,7 @@ codex-switch update
 codex-switch upgrade  # update 的同义命令
 ```
 
-更新仅允许 Git 快进合并；仓库存在未提交修改或分支发生分叉时会停止，不会覆盖本地改动。
+更新仅允许 Git 快进合并；仓库存在未提交修改或分支发生分叉时会停止，不会覆盖本地改动。若已安装模型同步监听，`update` 还会自动刷新 launchd 使用的脚本副本并重新加载监听，避免后台继续运行旧版同步逻辑。
 
 ## 卸载
 
@@ -195,7 +195,7 @@ model_catalog_json = "~/.codex/model-catalogs/custom-catalog.json"
 > codex-switch monitor status    # 查看监听状态
 > ```
 >
-> 底层是同目录的 `sync-model-catalog.sh`（也可独立用 `--install` / `--uninstall`）。内容无变化时会跳过写入（幂等，事件空触发零成本），日志在 `~/.codex-switch/sync.log`。随时可用 `codex debug models` 查看当前生效的模型列表。
+> 底层是同目录的 `sync-model-catalog.sh`（也可独立用 `--install` / `--uninstall`）。内容无变化时会跳过写入（幂等，事件空触发零成本），日志在 `~/.codex-switch/sync.log`。`codex-switch update` 会在监听已安装时自动刷新其脚本副本。随时可用 `codex debug models` 查看当前生效的模型列表。
 >
 > 同步还会按**当前供应商**自动设置选择器可见性：官方默认下隐藏自定义模型；自定义供应商下只显示该供应商的 model。picker 里看到的都是当前真正能用的组合——`visibility: hide` 只是不展示，模型仍可被内部功能（如 auto-review）正常解析。`codex-switch use` 切换后会自动触发一次同步。注意 picker 的模型列表在进程启动时加载：CLI 没有常驻进程，新开会话即自动刷新；桌面端可见性变化时 `use` 会询问是否重启 App 立即刷新（默认跳过）。供应商切换本身（请求路由与认证）即时生效，不受影响。
 

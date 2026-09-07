@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.3.1"
+VERSION="1.3.2"
 MIN_CODEX_AUTH_VERSION="0.118.0"
 CS_HOME="${CODEX_SWITCH_HOME:-$HOME/.codex-switch}"
 CS_STORE="$CS_HOME/providers.json"
@@ -791,7 +791,7 @@ _cs_script_path() {
 _cs_cmd_update() {
   command -v git >/dev/null 2>&1 || die "更新需要 git"
 
-  local script repo branch upstream before after new_version
+  local script repo branch upstream before after new_version monitor_plist sync
   script=$(_cs_script_path) || die "无法解析当前脚本路径"
   repo=$(git -C "$(dirname "$script")" rev-parse --show-toplevel 2>/dev/null) || \
     die "当前安装不在 Git 仓库中，请从 GitHub 重新 clone 后安装"
@@ -817,6 +817,22 @@ _cs_cmd_update() {
     ok "已是最新版本${new_version:+ (v$new_version)}"
   else
     ok "更新完成: $before -> $after${new_version:+ (v$new_version)}"
+  fi
+
+  # launchd 使用复制到 CS_HOME 的脚本，以避开 macOS 对 Documents 目录的
+  # 后台访问限制。仓库更新后必须刷新这份副本，否则监听器会继续运行旧逻辑。
+  monitor_plist="$HOME/Library/LaunchAgents/com.codex-switch.catalog-sync.plist"
+  if [[ -f "$monitor_plist" ]]; then
+    sync="$repo/sync-model-catalog.sh"
+    if [[ ! -x "$sync" ]]; then
+      err "模型同步监听已安装，但更新后的脚本不存在或不可执行: $sync"
+      return 1
+    fi
+    info "检测到模型同步监听，正在刷新监听脚本..."
+    if ! "$sync" --install; then
+      err "工具已更新，但模型同步监听刷新失败；请运行 codex-switch monitor 重试"
+      return 1
+    fi
   fi
 }
 
